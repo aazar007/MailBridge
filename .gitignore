@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# env files — keep credentials off GitHub
+.env
+.env.local
+.env*.local
+
+# service account / credential keys
+oath-*.json
+*-service-account*.json
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+.vercel

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- shadow/body bottom -->
+  <polygon points="18,54 82,8 62,92" fill="#b0b0b0"/>
+  <!-- main wing top face -->
+  <polygon points="18,54 82,8 56,52" fill="#d8d8d8"/>
+  <!-- right fold -->
+  <polygon points="56,52 82,8 62,92" fill="#e8e8e8"/>
+  <!-- left belly fold -->
+  <polygon points="18,54 56,52 44,68" fill="#c0c0c0"/>
+  <!-- crease line -->
+  <line x1="56" y1="52" x2="44" y2="68" stroke="#a0a0a0" stroke-width="1"/>
+</svg>

@@ -1,14 +1,11 @@
 /**
  * lib/token-store.ts
  *
- * جدول صغير على Turso مخصص فقط لرموز OAuth الحية (Gmail/Outlook). هذه الرموز
- * تُبقيها بعيداً عن Google Sheet عمداً — أي شخص لديه وصول للشيت يمكنه استخدامها
- * لإرسال بريد باسم الحساب المتصل لو وُضعت هناك كنص عادي.
- *
- * مفتاح الصف هو job_id (للإرسال المجدول القديم) أو campaign_id (للحملات).
+ * Live Gmail/Outlook OAuth tokens, keyed by job_id (legacy scheduled sends)
+ * or campaign_id (campaigns). Stored in the `send_tokens` table.
  */
 
-import { ensureSchema, getDb, tursoConfigured } from '@/lib/db';
+import { prisma, dbConfigured } from '@/lib/prisma';
 
 export interface TokenPair {
   gmailToken?: string;
@@ -20,47 +17,35 @@ const memoryTokens = new Map<string, TokenPair>();
 export async function saveTokens(key: string, tokens: TokenPair): Promise<void> {
   if (!tokens.gmailToken && !tokens.outlookTokens) return;
 
-  if (!tursoConfigured()) {
+  if (!dbConfigured()) {
     memoryTokens.set(key, tokens);
     return;
   }
 
-  await ensureSchema();
-  await getDb().execute({
-    sql: `
-      INSERT INTO send_tokens (id, gmail_token, outlook_tokens)
-      VALUES (?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        gmail_token = excluded.gmail_token,
-        outlook_tokens = excluded.outlook_tokens
-    `,
-    args: [key, tokens.gmailToken ?? null, tokens.outlookTokens ?? null],
+  await prisma.sendToken.upsert({
+    where: { id: key },
+    create: { id: key, gmailToken: tokens.gmailToken ?? null, outlookTokens: tokens.outlookTokens ?? null },
+    update: { gmailToken: tokens.gmailToken ?? null, outlookTokens: tokens.outlookTokens ?? null },
   });
 }
 
 export async function getTokens(key: string): Promise<TokenPair> {
-  if (!tursoConfigured()) {
+  if (!dbConfigured()) {
     return memoryTokens.get(key) ?? {};
   }
 
-  await ensureSchema();
-  const result = await getDb().execute({
-    sql: 'SELECT gmail_token, outlook_tokens FROM send_tokens WHERE id = ?',
-    args: [key],
-  });
-  const row = result.rows[0];
+  const row = await prisma.sendToken.findUnique({ where: { id: key } });
   if (!row) return {};
   return {
-    gmailToken: (row.gmail_token as string | null) ?? undefined,
-    outlookTokens: (row.outlook_tokens as string | null) ?? undefined,
+    gmailToken: row.gmailToken ?? undefined,
+    outlookTokens: row.outlookTokens ?? undefined,
   };
 }
 
 export async function deleteTokens(key: string): Promise<void> {
-  if (!tursoConfigured()) {
+  if (!dbConfigured()) {
     memoryTokens.delete(key);
     return;
   }
-  await ensureSchema();
-  await getDb().execute({ sql: 'DELETE FROM send_tokens WHERE id = ?', args: [key] });
+  await prisma.sendToken.deleteMany({ where: { id: key } });
 }

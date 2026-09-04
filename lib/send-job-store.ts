@@ -1,57 +1,53 @@
-import * as sheets from '@/lib/sheetsClient';
+import type { Prisma, SendJob as SendJobRow } from '@/generated/prisma/client';
+import { prisma } from '@/lib/prisma';
 import { getTokens, saveTokens, deleteTokens } from '@/lib/token-store';
 import { deleteJobFiles } from '@/lib/scheduled-attachments';
 import type { SendPayload } from '@/lib/send-types';
 import type { SendResultItem, StoredScheduledJob } from '@/lib/send-utils';
 
-const JOBS_TAB = 'send_jobs';
-const RECIPIENTS_TAB = 'send_recipients';
-
 export type SendJobKind = 'instant' | 'scheduled';
 
-async function rowToJob(row: sheets.SheetRow): Promise<StoredScheduledJob | null> {
+async function rowToJob(row: SendJobRow): Promise<StoredScheduledJob | null> {
   try {
-    if (!row.job_id || !row.payload_json) return null;
-    const payload = JSON.parse(row.payload_json as string) as SendPayload;
+    const payload = JSON.parse(row.payloadJson) as SendPayload;
     if (!Array.isArray(payload?.recipients)) return null;
 
-    const tokens = await getTokens(row.job_id as string);
+    const tokens = await getTokens(row.jobId);
 
     return {
-      id: row.job_id as string,
-      scheduledAt: (row.scheduled_at as string) ?? new Date().toISOString(),
-      createdAt: (row.created_at as string) ?? new Date().toISOString(),
-      status: (row.status as StoredScheduledJob['status']) ?? 'pending',
-      label: (row.label as string) ?? 'Send job',
+      id: row.jobId,
+      scheduledAt: row.scheduledAt.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+      status: row.status as StoredScheduledJob['status'],
+      label: row.label,
       payload,
       gmailToken: tokens.gmailToken,
       outlookTokens: tokens.outlookTokens,
-      error: (row.error as string | undefined) || undefined,
-      results: row.results_json ? JSON.parse(row.results_json as string) : undefined,
-      sentCount: Number(row.sent_count ?? 0),
-      failedCount: Number(row.failed_count ?? 0),
-      totalCount: Number(row.total_count ?? payload.recipients.length),
+      error: row.error ?? undefined,
+      results: row.resultsJson ? JSON.parse(row.resultsJson) : undefined,
+      sentCount: row.sentCount,
+      failedCount: row.failedCount,
+      totalCount: row.totalCount || payload.recipients.length,
     };
   } catch {
     return null;
   }
 }
 
-function jobToRow(job: StoredScheduledJob, kind: SendJobKind, existingId?: number) {
+function jobToData(job: StoredScheduledJob, kind: SendJobKind): Prisma.SendJobCreateInput {
   return {
-    id: existingId,
-    job_id: job.id,
+    jobId: job.id,
     kind,
-    scheduled_at: job.scheduledAt,
-    created_at: job.createdAt,
+    scheduledAt: new Date(job.scheduledAt),
+    createdAt: new Date(job.createdAt),
     status: job.status,
     label: job.label,
-    payload_json: JSON.stringify(job.payload),
-    error: job.error ?? '',
-    results_json: job.results ? JSON.stringify(job.results) : '',
-    sent_count: job.sentCount ?? 0,
-    failed_count: job.failedCount ?? 0,
-    total_count: job.totalCount ?? job.payload.recipients.length,
+    payloadJson: JSON.stringify(job.payload),
+    error: job.error ?? null,
+    resultsJson: job.results ? JSON.stringify(job.results) : null,
+    sentCount: job.sentCount ?? 0,
+    failedCount: job.failedCount ?? 0,
+    totalCount: job.totalCount ?? job.payload.recipients.length,
   };
 }
 
@@ -59,25 +55,21 @@ export async function seedJobRecipients(
   jobId: string,
   recipients: Record<string, string>[],
 ): Promise<void> {
-  const rows = await sheets.getRows(RECIPIENTS_TAB);
   const existing = new Set(
-    rows.filter((r) => r.job_id === jobId).map((r) => r.email as string),
+    (await prisma.sendRecipient.findMany({ where: { jobId }, select: { email: true } })).map((r) => r.email),
   );
 
   const toInsert = recipients.filter((r) => r.email && !existing.has(r.email));
   if (!toInsert.length) return;
 
-  let nextId = await sheets.nextId(RECIPIENTS_TAB);
-  const newRows = toInsert.map((recipient) => ({
-    id: nextId++,
-    job_id: jobId,
-    email: recipient.email,
-    recipient_json: JSON.stringify(recipient),
-    status: 'pending',
-    error: '',
-    sent_at: '',
-  }));
-  await sheets.appendRows(RECIPIENTS_TAB, newRows);
+  await prisma.sendRecipient.createMany({
+    data: toInsert.map((recipient) => ({
+      jobId,
+      email: recipient.email,
+      recipientJson: JSON.stringify(recipient),
+      status: 'pending',
+    })),
+  });
 }
 
 export async function createSendJob(
@@ -87,15 +79,12 @@ export async function createSendJob(
   await seedJobRecipients(job.id, job.payload.recipients);
   await saveTokens(job.id, { gmailToken: job.gmailToken, outlookTokens: job.outlookTokens });
 
-  const rows = await sheets.getRows(JOBS_TAB);
-  const existing = rows.find((r) => r.job_id === job.id);
-
-  if (existing) {
-    await sheets.updateRow(JOBS_TAB, existing._row, jobToRow(job, kind, Number(existing.id)));
-  } else {
-    const id = await sheets.nextId(JOBS_TAB);
-    await sheets.appendRow(JOBS_TAB, jobToRow(job, kind, id));
-  }
+  const data = jobToData(job, kind);
+  await prisma.sendJob.upsert({
+    where: { jobId: job.id },
+    create: data,
+    update: data,
+  });
 }
 
 export async function saveSendJob(job: StoredScheduledJob): Promise<void> {
@@ -105,15 +94,12 @@ export async function saveSendJob(job: StoredScheduledJob): Promise<void> {
 
   await saveTokens(job.id, { gmailToken: job.gmailToken, outlookTokens: job.outlookTokens });
 
-  const rows = await sheets.getRows(JOBS_TAB);
-  const existing = rows.find((r) => r.job_id === job.id);
-  if (!existing) return;
-  await sheets.updateRow(JOBS_TAB, existing._row, jobToRow(job, kind, Number(existing.id)));
+  const data = jobToData(job, kind);
+  await prisma.sendJob.updateMany({ where: { jobId: job.id }, data });
 }
 
 export async function loadSendJob(id: string): Promise<StoredScheduledJob | null> {
-  const rows = await sheets.getRows(JOBS_TAB);
-  const row = rows.find((r) => r.job_id === id);
+  const row = await prisma.sendJob.findUnique({ where: { jobId: id } });
   const job = row ? await rowToJob(row) : null;
   if (job) {
     job.results = await getJobResults(id);
@@ -122,13 +108,10 @@ export async function loadSendJob(id: string): Promise<StoredScheduledJob | null
 }
 
 export async function listSendJobs(): Promise<StoredScheduledJob[]> {
-  const rows = await sheets.getRows(JOBS_TAB);
-  const sorted = [...rows].sort((a, b) =>
-    String(a.scheduled_at).localeCompare(String(b.scheduled_at)),
-  );
+  const rows = await prisma.sendJob.findMany({ orderBy: { scheduledAt: 'asc' } });
 
   const jobs: StoredScheduledJob[] = [];
-  for (const row of sorted) {
+  for (const row of rows) {
     const job = await rowToJob(row);
     if (job) {
       job.results = await getJobResults(job.id);
@@ -139,14 +122,8 @@ export async function listSendJobs(): Promise<StoredScheduledJob[]> {
 }
 
 export async function deleteSendJob(id: string): Promise<void> {
-  const recipientRows = await sheets.getRows(RECIPIENTS_TAB);
-  const matches = recipientRows.filter((r) => r.job_id === id);
-  if (matches.length) await sheets.deleteRows(RECIPIENTS_TAB, matches.map((r) => r._row));
-
-  const jobRows = await sheets.getRows(JOBS_TAB);
-  const jobRow = jobRows.find((r) => r.job_id === id);
-  if (jobRow) await sheets.deleteRows(JOBS_TAB, [jobRow._row]);
-
+  await prisma.sendRecipient.deleteMany({ where: { jobId: id } });
+  await prisma.sendJob.deleteMany({ where: { jobId: id } });
   await deleteTokens(id);
 }
 
@@ -174,14 +151,16 @@ export async function listActiveSendJobs(): Promise<StoredScheduledJob[]> {
 }
 
 export async function getDueSendJobs(now = Date.now()): Promise<StoredScheduledJob[]> {
-  const rows = await sheets.getRows(JOBS_TAB);
-  const nowIso = new Date(now).toISOString();
-  const due = rows
-    .filter((r) => (r.status === 'pending' || r.status === 'partial') && String(r.scheduled_at) <= nowIso)
-    .sort((a, b) => String(a.scheduled_at).localeCompare(String(b.scheduled_at)));
+  const rows = await prisma.sendJob.findMany({
+    where: {
+      status: { in: ['pending', 'partial'] },
+      scheduledAt: { lte: new Date(now) },
+    },
+    orderBy: { scheduledAt: 'asc' },
+  });
 
   const jobs: StoredScheduledJob[] = [];
-  for (const row of due) {
+  for (const row of rows) {
     const job = await rowToJob(row);
     if (job) jobs.push(job);
   }
@@ -189,25 +168,25 @@ export async function getDueSendJobs(now = Date.now()): Promise<StoredScheduledJ
 }
 
 export async function resetStaleProcessingJobs(_maxAgeMs = 3 * 60_000): Promise<void> {
-  const rows = await sheets.getRows(JOBS_TAB);
-  const processing = rows.filter((r) => r.status === 'processing');
+  const processing = await prisma.sendJob.findMany({ where: { status: 'processing' } });
   if (!processing.length) return;
 
-  await sheets.batchUpdateRows(
-    JOBS_TAB,
-    processing.map((r) => ({
-      row: r._row,
-      obj: { ...r, status: 'partial', error: r.error || 'Resuming after interruption' },
-    })),
+  await prisma.$transaction(
+    processing.map((r) =>
+      prisma.sendJob.update({
+        where: { jobId: r.jobId },
+        data: { status: 'partial', error: r.error || 'Resuming after interruption' },
+      }),
+    ),
   );
 }
 
 export async function getPendingRecipients(jobId: string): Promise<Record<string, string>[]> {
-  const rows = await sheets.getRows(RECIPIENTS_TAB);
-  return rows
-    .filter((r) => r.job_id === jobId && r.status === 'pending')
-    .sort((a, b) => Number(a.id) - Number(b.id))
-    .map((r) => JSON.parse(r.recipient_json as string));
+  const rows = await prisma.sendRecipient.findMany({
+    where: { jobId, status: 'pending' },
+    orderBy: { id: 'asc' },
+  });
+  return rows.map((r) => JSON.parse(r.recipientJson));
 }
 
 export async function markRecipientSent(jobId: string, email: string): Promise<void> {
@@ -229,45 +208,32 @@ export interface RecipientResult {
 }
 
 /**
- * Batched equivalent of calling markRecipientSent/Failed once per recipient.
- * A live run of runSendJob() against a real Sheet showed the per-recipient
- * version burning through Google's 60-reads/min quota on just a couple of
- * recipients (each call did 2 reads + 2 writes). This does the whole job's
- * worth of recipient status updates in one batched write, plus a single
- * read+write for the job's sent_count/failed_count — O(1) Sheets calls
- * regardless of recipient count, not O(n).
+ * Batched equivalent of calling markRecipientSent/Failed once per recipient —
+ * one transaction for the whole tick's worth of recipient outcomes, plus a
+ * single counter update on the job row.
  */
 export async function applyRecipientResults(jobId: string, results: RecipientResult[]): Promise<void> {
   if (!results.length) return;
-  const now = new Date().toISOString();
+  const now = new Date();
 
-  const rows = await sheets.getRows(RECIPIENTS_TAB);
-  const byEmail = new Map(results.map((r) => [r.email, r]));
-  const updates = rows
-    .filter((r) => r.job_id === jobId && byEmail.has(r.email as string))
-    .map((r) => {
-      const result = byEmail.get(r.email as string)!;
-      return {
-        row: r._row,
-        obj: result.status === 'sent'
-          ? { ...r, status: 'sent', sent_at: now, error: '' }
-          : { ...r, status: 'failed', error: result.error ?? '' },
-      };
-    });
-  if (updates.length) await sheets.batchUpdateRows(RECIPIENTS_TAB, updates);
+  await prisma.$transaction(
+    results.map((result) =>
+      prisma.sendRecipient.updateMany({
+        where: { jobId, email: result.email },
+        data: result.status === 'sent'
+          ? { status: 'sent', sentAt: now, error: null }
+          : { status: 'failed', error: result.error ?? null },
+      }),
+    ),
+  );
 
   const sentDelta = results.filter((r) => r.status === 'sent').length;
   const failedDelta = results.filter((r) => r.status === 'failed').length;
 
-  const jobRows = await sheets.getRows(JOBS_TAB);
-  const jobRow = jobRows.find((r) => r.job_id === jobId);
-  if (jobRow) {
-    await sheets.updateRow(JOBS_TAB, jobRow._row, {
-      ...jobRow,
-      sent_count: Number(jobRow.sent_count ?? 0) + sentDelta,
-      failed_count: Number(jobRow.failed_count ?? 0) + failedDelta,
-    });
-  }
+  await prisma.sendJob.updateMany({
+    where: { jobId },
+    data: { sentCount: { increment: sentDelta }, failedCount: { increment: failedDelta } },
+  });
 }
 
 export async function getJobStats(jobId: string): Promise<{
@@ -276,29 +242,24 @@ export async function getJobStats(jobId: string): Promise<{
   pending: number;
   total: number;
 }> {
-  const rows = await sheets.getRows(RECIPIENTS_TAB);
-  const jobRows = rows.filter((r) => r.job_id === jobId);
-  let sent = 0;
-  let failed = 0;
-  let pending = 0;
-  for (const r of jobRows) {
-    if (r.status === 'sent') sent++;
-    else if (r.status === 'failed') failed++;
-    else pending++;
-  }
-  return { sent, failed, pending, total: jobRows.length };
+  const [sent, failed, total] = await Promise.all([
+    prisma.sendRecipient.count({ where: { jobId, status: 'sent' } }),
+    prisma.sendRecipient.count({ where: { jobId, status: 'failed' } }),
+    prisma.sendRecipient.count({ where: { jobId } }),
+  ]);
+  return { sent, failed, pending: total - sent - failed, total };
 }
 
 export async function getJobResults(jobId: string): Promise<SendResultItem[]> {
-  const rows = await sheets.getRows(RECIPIENTS_TAB);
-  return rows
-    .filter((r) => r.job_id === jobId && r.status !== 'pending')
-    .sort((a, b) => Number(a.id) - Number(b.id))
-    .map((r) => ({
-      email: r.email as string,
-      success: r.status === 'sent',
-      error: (r.error as string | undefined) || undefined,
-    }));
+  const rows = await prisma.sendRecipient.findMany({
+    where: { jobId, status: { not: 'pending' } },
+    orderBy: { id: 'asc' },
+  });
+  return rows.map((r) => ({
+    email: r.email,
+    success: r.status === 'sent',
+    error: r.error ?? undefined,
+  }));
 }
 
 export interface LegacyCleanupResult {
@@ -310,39 +271,39 @@ export interface LegacyCleanupResult {
 /**
  * Daily retention sweep for the legacy send_jobs/send_recipients tables
  * (same 24h-sent / 30d-failed / 7d-stale-job rules as campaign-store's
- * runDailyCleanup()). Runs once/day, so the extra reads here vs. a single
- * SQL statement are fine.
+ * runDailyCleanup()).
  */
 export async function runLegacyCleanup(): Promise<LegacyCleanupResult> {
-  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const recipientRows = await sheets.getRows(RECIPIENTS_TAB);
-  const sentStale = recipientRows.filter((r) => r.status === 'sent' && r.sent_at && String(r.sent_at) < cutoff24h);
-  const failedStale = recipientRows.filter(
-    (r) => (r.status === 'failed' || r.status === 'error') && r.sent_at && String(r.sent_at) < cutoff30d,
-  );
-  const toDelete = [...sentStale, ...failedStale];
-  if (toDelete.length) await sheets.deleteRows(RECIPIENTS_TAB, toDelete.map((r) => r._row));
+  const sentStale = await prisma.sendRecipient.deleteMany({
+    where: { status: 'sent', sentAt: { lt: cutoff24h } },
+  });
+  const failedStale = await prisma.sendRecipient.deleteMany({
+    where: { status: { in: ['failed', 'error'] }, sentAt: { lt: cutoff30d } },
+  });
 
-  const remainingJobIds = new Set((await sheets.getRows(RECIPIENTS_TAB)).map((r) => String(r.job_id)));
-  const jobRows = await sheets.getRows(JOBS_TAB);
-  const staleJobs = jobRows.filter(
-    (r) =>
-      (r.status === 'completed' || r.status === 'failed') &&
-      String(r.created_at) < cutoff7d &&
-      !remainingJobIds.has(String(r.job_id)),
+  const remainingJobIds = new Set(
+    (await prisma.sendRecipient.findMany({ select: { jobId: true }, distinct: ['jobId'] })).map((r) => r.jobId),
   );
-  if (staleJobs.length) {
-    await sheets.deleteRows(JOBS_TAB, staleJobs.map((r) => r._row));
-    for (const job of staleJobs) await deleteTokens(String(job.job_id));
+  const staleJobs = await prisma.sendJob.findMany({
+    where: {
+      status: { in: ['completed', 'failed'] },
+      createdAt: { lt: cutoff7d },
+    },
+  });
+  const trulyStale = staleJobs.filter((r) => !remainingJobIds.has(r.jobId));
+  if (trulyStale.length) {
+    await prisma.sendJob.deleteMany({ where: { jobId: { in: trulyStale.map((r) => r.jobId) } } });
+    for (const job of trulyStale) await deleteTokens(job.jobId);
   }
 
   return {
-    deletedSentRecipients: sentStale.length,
-    deletedFailedRecipients: failedStale.length,
-    deletedStaleJobs: staleJobs.length,
+    deletedSentRecipients: sentStale.count,
+    deletedFailedRecipients: failedStale.count,
+    deletedStaleJobs: trulyStale.length,
   };
 }
 

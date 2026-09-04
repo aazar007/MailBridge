@@ -1,0 +1,142 @@
+// MailBridge — Prisma / Postgres schema.
+// Replaces the old Google Sheets tabs (lib/sheetsSchema.ts) and the Turso
+// send_tokens table (lib/schema.sql). Everything the app persists now lives
+// in this one Postgres database.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ── Composer drafts (recipients grid + attachment picks before scheduling) ──
+model WorkSession {
+  sessionId   String   @id @map("session_id")
+  payloadJson String   @map("payload_json") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("work_sessions")
+}
+
+// ── Legacy single-shot / scheduled send jobs ──
+model SendJob {
+  jobId       String   @id @map("job_id")
+  kind        String
+  scheduledAt DateTime @map("scheduled_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  status      String
+  label       String
+  payloadJson String   @map("payload_json") @db.Text
+  error       String?  @db.Text
+  resultsJson String?  @map("results_json") @db.Text
+  sentCount   Int      @default(0) @map("sent_count")
+  failedCount Int      @default(0) @map("failed_count")
+  totalCount  Int      @default(0) @map("total_count")
+
+  @@index([status, scheduledAt])
+  @@map("send_jobs")
+}
+
+model SendRecipient {
+  id            Int       @id @default(autoincrement())
+  jobId         String    @map("job_id")
+  email         String
+  recipientJson String    @map("recipient_json") @db.Text
+  status        String    @default("pending")
+  error         String?   @db.Text
+  sentAt        DateTime? @map("sent_at")
+
+  @@index([jobId, status])
+  @@index([jobId, email])
+  @@map("send_recipients")
+}
+
+// ── Campaigns architecture ──
+model Campaign {
+  id             String    @id
+  userId         String    @map("user_id")
+  label          String
+  kind           String
+  status         String
+  scheduledAt    DateTime? @map("scheduled_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  totalEmails    Int       @default(0) @map("total_emails")
+  sentCount      Int       @default(0) @map("sent_count")
+  failedCount    Int       @default(0) @map("failed_count")
+  smtpConfigJson String    @map("smtp_config_json") @db.Text
+  templateJson   String    @map("template_json") @db.Text
+  error          String?   @db.Text
+
+  recipients  CampaignRecipient[]
+  attachments CampaignAttachment[]
+
+  @@index([userId, createdAt])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id            Int       @id @default(autoincrement())
+  campaignId    String    @map("campaign_id")
+  campaign      Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  email         String
+  recipientJson String    @map("recipient_json") @db.Text
+  status        String    @default("pending")
+  error         String?   @db.Text
+  scheduledAt   DateTime? @map("scheduled_at")
+  sentAt        DateTime? @map("sent_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@unique([campaignId, email])
+  @@index([status, scheduledAt])
+  @@map("campaign_recipients")
+}
+
+model CampaignAttachment {
+  id              Int      @id @default(autoincrement())
+  campaignId      String   @map("campaign_id")
+  campaign        Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipientEmail  String?  @map("recipient_email")
+  attachmentId    String   @map("attachment_id")
+  filename        String
+  contentType     String   @map("content_type")
+  storageUrl      String   @map("storage_url") @db.Text
+  fileSizeBytes   Int      @default(0) @map("file_size_bytes")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([campaignId])
+  @@map("campaign_attachments")
+}
+
+// ── Attachment chunk storage (base64 content, chunked client-side) ──
+model AttachmentChunk {
+  id            Int      @id @default(autoincrement())
+  attachmentId  String   @map("attachment_id")
+  sessionId     String?  @map("session_id")
+  jobId         String?  @map("job_id")
+  chunkIndex    Int      @map("chunk_index")
+  chunkCount    Int      @map("chunk_count")
+  filename      String
+  contentType   String   @map("content_type")
+  contentBase64 String   @map("content_base64") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([attachmentId, chunkIndex])
+  @@index([sessionId])
+  @@index([jobId])
+  @@map("files_handler")
+}
+
+// ── Live Gmail / Outlook OAuth tokens ──
+// Key is job_id (legacy sends) or campaign_id (campaigns).
+model SendToken {
+  id            String  @id
+  gmailToken    String? @map("gmail_token") @db.Text
+  outlookTokens String? @map("outlook_tokens") @db.Text
+
+  @@map("send_tokens")
+}

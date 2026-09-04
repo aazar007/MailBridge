@@ -1,10 +1,11 @@
 /**
- * Attachment chunk storage — Google Sheets tab `files_handler`.
- * Chunks are ≤ ~40k chars so they fit Sheets cell limits (~50k).
- * Falls back to in-memory Maps when Sheets env vars are missing (local/dev).
+ * Attachment chunk storage — Postgres table `files_handler`.
+ * Chunks are split client-side (see lib/attachments.ts); this layer just
+ * stores/reassembles them. Falls back to in-memory Maps when DATABASE_URL is
+ * missing (local/dev).
  */
 
-import * as sheets from '@/lib/sheetsClient';
+import { prisma, dbConfigured } from '@/lib/prisma';
 import { assertFileLimit } from '@/lib/temp-limits';
 import type { EmailAttachment } from '@/lib/send-types';
 
@@ -20,52 +21,14 @@ export interface StoredAttachmentChunk {
   createdAt: string;
 }
 
-const TAB = 'files_handler' as const;
 const memoryChunks = new Map<string, Map<number, StoredAttachmentChunk>>();
 
-function sheetsConfigured(): boolean {
-  return !!(
-    process.env.GOOGLE_SHEETS_SPREADSHEET_ID?.trim()
-    && process.env.GOOGLE_SHEETS_CLIENT_EMAIL?.trim()
-    && process.env.GOOGLE_SHEETS_PRIVATE_KEY?.trim()
-  );
-}
-
-function rowToChunk(r: sheets.SheetRow): StoredAttachmentChunk {
-  return {
-    attachmentId: String(r.attachment_id ?? ''),
-    sessionId: r.session_id ? String(r.session_id) : undefined,
-    jobId: r.job_id ? String(r.job_id) : undefined,
-    chunkIndex: Number(r.chunk_index) || 0,
-    chunkCount: Number(r.chunk_count) || 1,
-    filename: String(r.filename ?? ''),
-    contentType: String(r.content_type ?? 'application/octet-stream'),
-    content: String(r.content_base64 ?? ''),
-    createdAt: String(r.created_at ?? ''),
-  };
-}
-
-function chunkToRow(chunk: StoredAttachmentChunk, id: number | string): Record<string, unknown> {
-  return {
-    id,
-    attachment_id: chunk.attachmentId,
-    session_id: chunk.sessionId ?? '',
-    job_id: chunk.jobId ?? '',
-    chunk_index: chunk.chunkIndex,
-    chunk_count: chunk.chunkCount,
-    filename: chunk.filename,
-    content_type: chunk.contentType,
-    content_base64: chunk.content,
-    created_at: chunk.createdAt,
-  };
-}
-
 export async function countStoredFiles(): Promise<number> {
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     return memoryChunks.size;
   }
-  const rows = await sheets.getRows(TAB);
-  return new Set(rows.map((r) => String(r.attachment_id))).size;
+  const rows = await prisma.attachmentChunk.findMany({ select: { attachmentId: true } });
+  return new Set(rows.map((r) => r.attachmentId)).size;
 }
 
 export async function saveScheduledAttachmentChunk(
@@ -75,18 +38,15 @@ export async function saveScheduledAttachmentChunk(
 }
 
 /**
- * Save many chunks (e.g. everything in one upload request) with at most one
- * Sheets read + one append + one batch-update, instead of a read+write pair
- * per chunk. Sheets' write quota is ~60 requests/min per service account, and
- * uploads fire several chunk-batches concurrently — a per-chunk round trip
- * exhausts that in seconds on anything but a tiny file.
+ * Save many chunks (e.g. everything in one upload request) in a single
+ * transaction, instead of one round trip per chunk.
  */
 export async function saveScheduledAttachmentChunks(
   chunks: StoredAttachmentChunk[],
 ): Promise<void> {
   if (chunks.length === 0) return;
 
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     for (const chunk of chunks) {
       const existing = memoryChunks.get(chunk.attachmentId) ?? new Map<number, StoredAttachmentChunk>();
       existing.set(chunk.chunkIndex, chunk);
@@ -95,54 +55,64 @@ export async function saveScheduledAttachmentChunks(
     return;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const existingIds = new Set(rows.map((r) => String(r.attachment_id)));
+  const existingIds = new Set(
+    (await prisma.attachmentChunk.findMany({ select: { attachmentId: true }, distinct: ['attachmentId'] }))
+      .map((r) => r.attachmentId),
+  );
   const newFileIds = new Set(chunks.map((c) => c.attachmentId).filter((id) => !existingIds.has(id)));
   if (newFileIds.size > 0) {
     assertFileLimit(existingIds.size + newFileIds.size);
   }
 
-  const byKey = new Map(
-    rows.map((r) => [`${r.attachment_id}:${r.chunk_index}`, r] as const),
+  await prisma.$transaction(
+    chunks.map((chunk) =>
+      prisma.attachmentChunk.upsert({
+        where: { attachmentId_chunkIndex: { attachmentId: chunk.attachmentId, chunkIndex: chunk.chunkIndex } },
+        create: {
+          attachmentId: chunk.attachmentId,
+          sessionId: chunk.sessionId,
+          jobId: chunk.jobId,
+          chunkIndex: chunk.chunkIndex,
+          chunkCount: chunk.chunkCount,
+          filename: chunk.filename,
+          contentType: chunk.contentType,
+          contentBase64: chunk.content,
+        },
+        update: {
+          // Never clobber an already-claimed sessionId/jobId with an empty one.
+          sessionId: chunk.sessionId,
+          jobId: chunk.jobId,
+          chunkCount: chunk.chunkCount,
+          filename: chunk.filename,
+          contentType: chunk.contentType,
+          contentBase64: chunk.content,
+        },
+      }),
+    ),
   );
-
-  const updates: sheets.RowUpdate[] = [];
-  const appends: Record<string, unknown>[] = [];
-  let nextIdCounter = await sheets.nextId(TAB);
-
-  for (const chunk of chunks) {
-    const existing = byKey.get(`${chunk.attachmentId}:${chunk.chunkIndex}`);
-    if (existing) {
-      const merged: StoredAttachmentChunk = {
-        ...chunk,
-        sessionId: chunk.sessionId || (existing.session_id ? String(existing.session_id) : undefined),
-        jobId: chunk.jobId || (existing.job_id ? String(existing.job_id) : undefined),
-      };
-      updates.push({ row: existing._row, obj: chunkToRow(merged, existing.id || existing._row) });
-    } else {
-      appends.push(chunkToRow(chunk, nextIdCounter++));
-    }
-  }
-
-  if (appends.length) await sheets.appendRows(TAB, appends);
-  if (updates.length) await sheets.batchUpdateRows(TAB, updates);
 }
 
 export async function loadScheduledAttachment(attachmentId: string): Promise<EmailAttachment> {
   let chunks: StoredAttachmentChunk[];
 
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     chunks = Array.from(memoryChunks.get(attachmentId)?.values() ?? []);
   } else {
-    const rows = await sheets.getRows(TAB);
-    chunks = rows
-      .filter((r) => String(r.attachment_id) === attachmentId)
-      .map(rowToChunk)
-      .sort((a, b) => a.chunkIndex - b.chunkIndex);
-    // Deduplicate in case parallel uploads raced past the upsert check.
-    const byIndex = new Map<number, StoredAttachmentChunk>();
-    for (const c of chunks) byIndex.set(c.chunkIndex, c);
-    chunks = [...byIndex.values()].sort((a, b) => a.chunkIndex - b.chunkIndex);
+    const rows = await prisma.attachmentChunk.findMany({
+      where: { attachmentId },
+      orderBy: { chunkIndex: 'asc' },
+    });
+    chunks = rows.map((r) => ({
+      attachmentId: r.attachmentId,
+      sessionId: r.sessionId ?? undefined,
+      jobId: r.jobId ?? undefined,
+      chunkIndex: r.chunkIndex,
+      chunkCount: r.chunkCount,
+      filename: r.filename,
+      contentType: r.contentType,
+      content: r.contentBase64,
+      createdAt: r.createdAt.toISOString(),
+    }));
     console.log(`[loadScheduledAttachment] id=${attachmentId} rows=${chunks.length}`);
   }
 
@@ -171,7 +141,7 @@ export async function deleteScheduledAttachments(attachmentIds: string[]): Promi
   const ids = new Set(attachmentIds.filter(Boolean));
   if (ids.size === 0) return;
 
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     for (const id of ids) {
       const chunks = memoryChunks.get(id);
       if (chunks) {
@@ -182,15 +152,13 @@ export async function deleteScheduledAttachments(attachmentIds: string[]): Promi
     return;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows
-    .filter((r) => ids.has(String(r.attachment_id)) && !r.job_id)
-    .map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
+  await prisma.attachmentChunk.deleteMany({
+    where: { attachmentId: { in: [...ids] }, jobId: null },
+  });
 }
 
 /** Tag selected files with a send job so they survive composer cleanup.
- *  Returns the number of sheet rows claimed. */
+ *  Returns the number of rows claimed. */
 export async function claimAttachmentsForJob(
   jobId: string,
   attachmentIds: string[],
@@ -198,7 +166,7 @@ export async function claimAttachmentsForJob(
   const ids = [...new Set(attachmentIds.filter(Boolean))];
   if (ids.length === 0) return 0;
 
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     let claimed = 0;
     for (const id of ids) {
       const chunks = memoryChunks.get(id);
@@ -209,19 +177,12 @@ export async function claimAttachmentsForJob(
     return claimed;
   }
 
-  const idSet = new Set(ids);
-  const rows = await sheets.getRows(TAB);
-  const matched = rows.filter((r) => idSet.has(String(r.attachment_id)));
-  console.log(`[claimAttachmentsForJob] jobId=${jobId} ids=${ids.join(',')} rows=${matched.length}`);
-
-  // Only patch job_id — never rewrite content_base64 (Sheets can drop/truncate
-  // large cells when a full-row update is sent).
-  await sheets.batchUpdateColumn(
-    TAB,
-    'job_id',
-    matched.map((r) => ({ row: r._row, value: jobId })),
-  );
-  return matched.length;
+  console.log(`[claimAttachmentsForJob] jobId=${jobId} ids=${ids.join(',')}`);
+  const result = await prisma.attachmentChunk.updateMany({
+    where: { attachmentId: { in: ids } },
+    data: { jobId },
+  });
+  return result.count;
 }
 
 /** Delete composer uploads in a session that are not in the keep list. */
@@ -231,7 +192,7 @@ export async function deleteUnselectedSessionFiles(
 ): Promise<number> {
   const keep = new Set(keepAttachmentIds.filter(Boolean));
 
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     let removed = 0;
     for (const [id, chunks] of memoryChunks) {
       const first = chunks.values().next().value;
@@ -243,22 +204,19 @@ export async function deleteUnselectedSessionFiles(
     return removed;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows
-    .filter((r) => {
-      if (r.job_id) return false;
-      if (String(r.session_id) !== sessionId) return false;
-      if (keep.size === 0) return true;
-      return !keep.has(String(r.attachment_id));
-    })
-    .map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
-  return toDelete.length;
+  const result = await prisma.attachmentChunk.deleteMany({
+    where: {
+      jobId: null,
+      sessionId,
+      ...(keep.size > 0 ? { attachmentId: { notIn: [...keep] } } : {}),
+    },
+  });
+  return result.count;
 }
 
 /** Clear composer uploads for a session (keeps job-linked files). */
 export async function resetSessionFileBase(sessionId?: string): Promise<number> {
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     let removed = 0;
     for (const [id, chunks] of memoryChunks) {
       const first = chunks.values().next().value;
@@ -270,16 +228,10 @@ export async function resetSessionFileBase(sessionId?: string): Promise<number> 
     return removed;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows
-    .filter((r) => {
-      if (r.job_id) return false;
-      if (sessionId && String(r.session_id) !== sessionId) return false;
-      return true;
-    })
-    .map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
-  return toDelete.length;
+  const result = await prisma.attachmentChunk.deleteMany({
+    where: { jobId: null, ...(sessionId ? { sessionId } : {}) },
+  });
+  return result.count;
 }
 
 /** Safe delete: only removes composer/unlinked rows. */
@@ -289,7 +241,7 @@ export async function emptyFilesHandler(): Promise<number> {
 
 /** Delete composer rows only — keeps files linked to ANY send job. */
 export async function emptyComposerFiles(_activeJobIds: string[] = []): Promise<number> {
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     let removed = 0;
     for (const [id, chunks] of memoryChunks) {
       const jobId = chunks.values().next().value?.jobId;
@@ -301,10 +253,8 @@ export async function emptyComposerFiles(_activeJobIds: string[] = []): Promise<
     return removed;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows.filter((r) => !r.job_id).map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
-  return toDelete.length;
+  const result = await prisma.attachmentChunk.deleteMany({ where: { jobId: null } });
+  return result.count;
 }
 
 /** Delete composer uploads by id, then wipe all unclaimed rows. */
@@ -334,7 +284,7 @@ export async function transferSessionFilesToJob(
 
 /** Remove draft uploads with no session tag (older data). */
 export async function purgeLegacySessionFiles(): Promise<number> {
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     let removed = 0;
     for (const [id, chunks] of memoryChunks) {
       const first = chunks.values().next().value;
@@ -346,29 +296,29 @@ export async function purgeLegacySessionFiles(): Promise<number> {
     return removed;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows
-    .filter((r) => !r.job_id && (!r.session_id || String(r.session_id) === ''))
-    .map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
-  return toDelete.length;
+  const result = await prisma.attachmentChunk.deleteMany({
+    where: { jobId: null, sessionId: null },
+  });
+  return result.count;
 }
 
 /** Remove files whose job row no longer exists. */
 export async function purgeOrphanJobFiles(): Promise<number> {
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     return 0;
   }
 
   const { listSendJobs } = await import('@/lib/send-job-store');
   const activeJobIds = new Set((await listSendJobs()).map((j) => j.id));
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows
-    .filter((r) => r.job_id && !activeJobIds.has(String(r.job_id)))
-    .map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
-  return toDelete.length;
+  const rows = await prisma.attachmentChunk.findMany({
+    where: { jobId: { not: null } },
+    select: { id: true, jobId: true },
+  });
+  const staleRowIds = rows.filter((r) => r.jobId && !activeJobIds.has(r.jobId)).map((r) => r.id);
+  if (!staleRowIds.length) return 0;
+  await prisma.attachmentChunk.deleteMany({ where: { id: { in: staleRowIds } } });
+  return staleRowIds.length;
 }
 
 /** Remove all draft/session uploads not linked to a send job. */
@@ -378,16 +328,14 @@ export async function purgeSessionFiles(): Promise<number> {
 
 /** Remove all files owned by a completed/cancelled job. */
 export async function deleteJobFiles(jobId: string): Promise<void> {
-  if (!sheetsConfigured()) {
+  if (!dbConfigured()) {
     for (const [id, chunks] of memoryChunks) {
       if (chunks.values().next().value?.jobId === jobId) memoryChunks.delete(id);
     }
     return;
   }
 
-  const rows = await sheets.getRows(TAB);
-  const toDelete = rows.filter((r) => String(r.job_id) === jobId).map((r) => r._row);
-  await sheets.deleteRows(TAB, toDelete);
+  await prisma.attachmentChunk.deleteMany({ where: { jobId } });
 }
 
 export function getAttachmentIdsFromMap(

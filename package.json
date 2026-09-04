@@ -4,17 +4,23 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "next build",
-    "start": "next start"
+    "build": "prisma generate && prisma migrate deploy && next build",
+    "start": "next start",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.3",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "googleapis": "^172.0.0",
     "lucide-react": "^1.20.0",
     "motion": "^12.40.0",
     "next": "^15.3.2",
     "nodemailer": "^6.9.16",
     "papaparse": "^5.4.1",
+    "pg": "^8.23.0",
+    "prisma": "^7.10.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -23,8 +29,10 @@
     "@types/node": "^22",
     "@types/nodemailer": "^6.4.17",
     "@types/papaparse": "^5.3.15",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
     "postcss": "^8",
     "tailwindcss": "^4",
     "typescript": "^5"

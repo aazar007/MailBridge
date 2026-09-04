@@ -1,24 +1,17 @@
 /**
  * campaign-store.ts
  *
- * Single source of truth for the Campaigns architecture — now backed by
- * Google Sheets instead of Turso. See lib/sheetsClient.ts for the low-level
- * tab I/O and lib/token-store.ts for where live Gmail/Outlook tokens live
- * (deliberately NOT in the Sheet — see createCampaign() below).
- *
- * Rate-limit note: Sheets has no SQL batch()/transaction primitive, so the
- * hot path (process-scheduled cron) must NOT call markRecipientSent/Failed
- * once per recipient — that reintroduces the "100+ API calls per tick"
- * problem. Use applyRecipientResults() to write all of a tick's outcomes in
- * one batched call, and reconcileCampaignStatuses() to update affected
- * campaigns' status in a second batched call.
+ * Single source of truth for the Campaigns architecture, backed by Postgres
+ * via Prisma. See lib/token-store.ts for where live Gmail/Outlook tokens
+ * live (deliberately kept out of campaign_recipients — see createCampaign()
+ * below).
  */
 
-import * as sheets from '@/lib/sheetsClient';
+import { prisma } from '@/lib/prisma';
 import { saveTokens } from '@/lib/token-store';
 import { createId } from '@/lib/id';
 
-// ─── Types (unchanged from the Turso version) ─────────────────────────────────
+// ─── Types (unchanged from the Sheets version) ─────────────────────────────────
 
 export type CampaignKind   = 'instant' | 'scheduled';
 export type CampaignStatus = 'pending' | 'processing' | 'partial' | 'completed' | 'failed';
@@ -69,10 +62,6 @@ export type NewCampaignInput = Omit<Campaign, 'id' | 'createdAt' | 'updatedAt' |
 export type NewRecipientInput = Omit<CampaignRecipient, 'id' | 'campaignId' | 'createdAt'>;
 export type NewAttachmentInput = Omit<CampaignAttachment, 'id' | 'campaignId' | 'createdAt'>;
 
-const CAMPAIGNS_TAB = 'campaigns';
-const RECIPIENTS_TAB = 'campaign_recipients';
-const ATTACHMENTS_TAB = 'campaign_attachments';
-
 // ─── Create campaign ──────────────────────────────────────────────────────────
 
 /**
@@ -80,8 +69,9 @@ const ATTACHMENTS_TAB = 'campaign_attachments';
  *
  * Recipient contexts sometimes carry a live gmailToken/outlookTokens field
  * (snapshotted at compose time so the cron can send later without a live
- * session). Those never get written to the Sheet — they're extracted once
- * per campaign into the Turso token-store, and stripped from recipient_json.
+ * session). Those never get written to campaign_recipients — they're
+ * extracted once per campaign into the token-store, and stripped from
+ * recipient_json.
  */
 export async function createCampaign(
   input: NewCampaignInput,
@@ -107,7 +97,7 @@ export async function createCampaign(
   const seenEmails = new Set<string>();
   const sanitizedRecipients = recipients
     .filter((r) => {
-      if (seenEmails.has(r.email)) return false; // Sheets has no UNIQUE(campaign_id, email)
+      if (seenEmails.has(r.email)) return false; // enforce one row per (campaign, email)
       seenEmails.add(r.email);
       return true;
     })
@@ -128,57 +118,49 @@ export async function createCampaign(
     await saveTokens(id, { gmailToken, outlookTokens });
   }
 
-  await sheets.appendRow(CAMPAIGNS_TAB, {
-    id,
-    user_id: campaign.userId,
-    label: campaign.label,
-    kind: campaign.kind,
-    status: campaign.status,
-    scheduled_at: campaign.scheduledAt ?? '',
-    created_at: now,
-    updated_at: now,
-    total_emails: campaign.totalEmails,
-    sent_count: 0,
-    failed_count: 0,
-    smtp_config_json: campaign.smtpConfigJson,
-    template_json: campaign.templateJson,
-    error: campaign.error ?? '',
+  await prisma.campaign.create({
+    data: {
+      id,
+      userId: campaign.userId,
+      label: campaign.label,
+      kind: campaign.kind,
+      status: campaign.status,
+      scheduledAt: campaign.scheduledAt ? new Date(campaign.scheduledAt) : null,
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+      totalEmails: campaign.totalEmails,
+      sentCount: 0,
+      failedCount: 0,
+      smtpConfigJson: campaign.smtpConfigJson,
+      templateJson: campaign.templateJson,
+      error: campaign.error ?? null,
+    },
   });
 
   if (sanitizedRecipients.length) {
-    let nextId = await sheets.nextId(RECIPIENTS_TAB);
-    await sheets.appendRows(
-      RECIPIENTS_TAB,
-      sanitizedRecipients.map((r) => ({
-        id: nextId++,
-        campaign_id: id,
+    await prisma.campaignRecipient.createMany({
+      data: sanitizedRecipients.map((r) => ({
+        campaignId: id,
         email: r.email,
-        recipient_json: r.recipientJson,
+        recipientJson: r.recipientJson,
         status: r.status,
-        error: '',
-        scheduled_at: r.scheduledAt ?? campaign.scheduledAt ?? '',
-        sent_at: '',
-        created_at: now,
+        scheduledAt: (r.scheduledAt ?? campaign.scheduledAt) ? new Date(r.scheduledAt ?? campaign.scheduledAt!) : null,
       })),
-    );
+    });
   }
 
   if (attachments.length) {
-    let nextId = await sheets.nextId(ATTACHMENTS_TAB);
-    await sheets.appendRows(
-      ATTACHMENTS_TAB,
-      attachments.map((a) => ({
-        id: nextId++,
-        campaign_id: id,
-        recipient_email: a.recipientEmail ?? '',
-        attachment_id: a.attachmentId,
+    await prisma.campaignAttachment.createMany({
+      data: attachments.map((a) => ({
+        campaignId: id,
+        recipientEmail: a.recipientEmail ?? null,
+        attachmentId: a.attachmentId,
         filename: a.filename,
-        content_type: a.contentType,
-        storage_url: a.storageUrl,
-        file_size_bytes: a.fileSizeBytes,
-        created_at: now,
+        contentType: a.contentType,
+        storageUrl: a.storageUrl,
+        fileSizeBytes: a.fileSizeBytes,
       })),
-    );
+    });
   }
 
   return campaign;
@@ -187,18 +169,17 @@ export async function createCampaign(
 // ─── Campaign queries ─────────────────────────────────────────────────────────
 
 export async function getCampaign(id: string): Promise<Campaign | null> {
-  const rows = await sheets.getRows(CAMPAIGNS_TAB);
-  const row = rows.find((r) => String(r.id) === id);
+  const row = await prisma.campaign.findUnique({ where: { id } });
   return row ? rowToCampaign(row) : null;
 }
 
 export async function listCampaigns(userId: string, limit = 100): Promise<Campaign[]> {
-  const rows = await sheets.getRows(CAMPAIGNS_TAB);
-  return rows
-    .filter((r) => r.user_id === userId)
-    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-    .slice(0, limit)
-    .map(rowToCampaign);
+  const rows = await prisma.campaign.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+  return rows.map(rowToCampaign);
 }
 
 export async function updateCampaignStatus(
@@ -206,53 +187,37 @@ export async function updateCampaignStatus(
   status: CampaignStatus,
   error?: string,
 ): Promise<void> {
-  const now = new Date().toISOString();
-  const rows = await sheets.getRows(CAMPAIGNS_TAB);
-  const row = rows.find((r) => String(r.id) === campaignId);
-  if (!row) return;
-  await sheets.updateRow(CAMPAIGNS_TAB, row._row, { ...row, status, error: error ?? '', updated_at: now });
+  await prisma.campaign.updateMany({
+    where: { id: campaignId },
+    data: { status, error: error ?? null, updatedAt: new Date() },
+  });
 }
 
 // ─── Recipient queries ────────────────────────────────────────────────────────
 
-/**
- * Pull the next batch of due recipients across ALL campaigns.
- * No SQL JOIN in Sheets — reads both tabs and joins in memory.
- */
+/** Pull the next batch of due recipients across ALL campaigns (excluding failed campaigns). */
 export async function getDueCampaignRecipients(batchSize = 50): Promise<CampaignRecipient[]> {
-  const now = new Date().toISOString();
-  const [recipientRows, campaignRows] = await Promise.all([
-    sheets.getRows(RECIPIENTS_TAB),
-    sheets.getRows(CAMPAIGNS_TAB),
-  ]);
-  const campaignStatusById = new Map(campaignRows.map((c) => [String(c.id), String(c.status)]));
+  const now = new Date();
+  const rows = await prisma.campaignRecipient.findMany({
+    where: {
+      status: { in: ['pending', 'scheduled'] },
+      OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }],
+      campaign: { status: { not: 'failed' } },
+    },
+    orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+    take: batchSize,
+  });
 
-  const due = recipientRows
-    .filter((r) => {
-      const status = String(r.status);
-      if (status !== 'pending' && status !== 'scheduled') return false;
-      const scheduledAt = r.scheduled_at ? String(r.scheduled_at) : '';
-      if (scheduledAt && scheduledAt > now) return false;
-      return campaignStatusById.get(String(r.campaign_id)) !== 'failed';
-    })
-    .sort((a, b) => {
-      const aSched = String(a.scheduled_at ?? '');
-      const bSched = String(b.scheduled_at ?? '');
-      if (aSched !== bSched) return aSched.localeCompare(bSched);
-      return Number(a.id) - Number(b.id);
-    })
-    .slice(0, batchSize);
-
-  return due.map(rowToRecipient);
+  return rows.map(rowToRecipient);
 }
 
 /** Fetch all recipients for a campaign (used for display / retry UI). */
 export async function getCampaignRecipients(campaignId: string): Promise<CampaignRecipient[]> {
-  const rows = await sheets.getRows(RECIPIENTS_TAB);
-  return rows
-    .filter((r) => String(r.campaign_id) === campaignId)
-    .sort((a, b) => Number(a.id) - Number(b.id))
-    .map(rowToRecipient);
+  const rows = await prisma.campaignRecipient.findMany({
+    where: { campaignId },
+    orderBy: { id: 'asc' },
+  });
+  return rows.map(rowToRecipient);
 }
 
 // ─── Batched status + counter updates ─────────────────────────────────────────
@@ -265,32 +230,25 @@ export interface RecipientResult {
 }
 
 /**
- * Applies many recipient outcomes in ONE Sheets write, then increments each
- * affected campaign's sent_count/failed_count in a SECOND batched write.
- * This is the hot-path primitive — call it once per cron tick with every
- * recipient's result, not once per recipient.
+ * Applies many recipient outcomes in one transaction, then increments each
+ * affected campaign's sent_count/failed_count in a second transaction. Call
+ * this once per cron tick with every recipient's result, not once per
+ * recipient.
  */
 export async function applyRecipientResults(results: RecipientResult[]): Promise<void> {
   if (!results.length) return;
-  const now = new Date().toISOString();
+  const now = new Date();
 
-  const recipientRows = await sheets.getRows(RECIPIENTS_TAB);
-  const byId = new Map(recipientRows.map((r) => [Number(r.id), r]));
-
-  const recipientUpdates: sheets.RowUpdate[] = [];
-  for (const res of results) {
-    const row = byId.get(res.recipientId);
-    if (!row) continue;
-    recipientUpdates.push({
-      row: row._row,
-      obj: res.status === 'sent'
-        ? { ...row, status: 'sent', sent_at: now, error: '' }
-        : { ...row, status: 'failed', error: res.error ?? '' },
-    });
-  }
-  if (recipientUpdates.length) {
-    await sheets.batchUpdateRows(RECIPIENTS_TAB, recipientUpdates);
-  }
+  await prisma.$transaction(
+    results.map((res) =>
+      prisma.campaignRecipient.update({
+        where: { id: res.recipientId },
+        data: res.status === 'sent'
+          ? { status: 'sent', sentAt: now, error: null }
+          : { status: 'failed', error: res.error ?? null },
+      }),
+    ),
+  );
 
   const deltas = new Map<string, { sent: number; failed: number }>();
   for (const res of results) {
@@ -299,24 +257,18 @@ export async function applyRecipientResults(results: RecipientResult[]): Promise
     deltas.set(res.campaignId, d);
   }
 
-  const campaignRows = await sheets.getRows(CAMPAIGNS_TAB);
-  const campaignUpdates: sheets.RowUpdate[] = [];
-  for (const [campaignId, delta] of deltas) {
-    const row = campaignRows.find((r) => String(r.id) === campaignId);
-    if (!row) continue;
-    campaignUpdates.push({
-      row: row._row,
-      obj: {
-        ...row,
-        sent_count: Number(row.sent_count ?? 0) + delta.sent,
-        failed_count: Number(row.failed_count ?? 0) + delta.failed,
-        updated_at: now,
-      },
-    });
-  }
-  if (campaignUpdates.length) {
-    await sheets.batchUpdateRows(CAMPAIGNS_TAB, campaignUpdates);
-  }
+  await prisma.$transaction(
+    [...deltas.entries()].map(([campaignId, delta]) =>
+      prisma.campaign.updateMany({
+        where: { id: campaignId },
+        data: {
+          sentCount: { increment: delta.sent },
+          failedCount: { increment: delta.failed },
+          updatedAt: now,
+        },
+      }),
+    ),
+  );
 }
 
 /** Single-recipient convenience wrapper around applyRecipientResults(). */
@@ -341,32 +293,25 @@ export async function reconcileCampaignStatuses(campaignIds: string[]): Promise<
   const uniqueIds = [...new Set(campaignIds)];
   if (!uniqueIds.length) return;
 
-  const [recipientRows, campaignRows] = await Promise.all([
-    sheets.getRows(RECIPIENTS_TAB),
-    sheets.getRows(CAMPAIGNS_TAB),
-  ]);
-
-  const now = new Date().toISOString();
-  const updates: sheets.RowUpdate[] = [];
+  const now = new Date();
 
   for (const campaignId of uniqueIds) {
-    const campaignRow = campaignRows.find((r) => String(r.id) === campaignId);
-    if (!campaignRow) continue;
+    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+    if (!campaign) continue;
 
-    const recipients = recipientRows.filter((r) => String(r.campaign_id) === campaignId);
-    const total = recipients.length;
+    const [total, pending, failed] = await Promise.all([
+      prisma.campaignRecipient.count({ where: { campaignId } }),
+      prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['pending', 'scheduled'] } } }),
+      prisma.campaignRecipient.count({ where: { campaignId, status: 'failed' } }),
+    ]);
     if (total === 0) continue;
-    const pending = recipients.filter((r) => r.status === 'pending' || r.status === 'scheduled').length;
     if (pending > 0) continue; // still in progress
 
-    const failed = recipients.filter((r) => r.status === 'failed').length;
     const status: CampaignStatus = failed === total ? 'failed' : 'completed';
-    if (campaignRow.status === status) continue;
+    if (campaign.status === status) continue;
 
-    updates.push({ row: campaignRow._row, obj: { ...campaignRow, status, updated_at: now } });
+    await prisma.campaign.update({ where: { id: campaignId }, data: { status, updatedAt: now } });
   }
-
-  if (updates.length) await sheets.batchUpdateRows(CAMPAIGNS_TAB, updates);
 }
 
 // ─── Attachment queries ───────────────────────────────────────────────────────
@@ -375,10 +320,13 @@ export async function getAttachmentsForRecipient(
   campaignId: string,
   recipientEmail: string,
 ): Promise<CampaignAttachment[]> {
-  const rows = await sheets.getRows(ATTACHMENTS_TAB);
-  return rows
-    .filter((r) => String(r.campaign_id) === campaignId && (!r.recipient_email || r.recipient_email === recipientEmail))
-    .map(rowToAttachment);
+  const rows = await prisma.campaignAttachment.findMany({
+    where: {
+      campaignId,
+      OR: [{ recipientEmail: null }, { recipientEmail }],
+    },
+  });
+  return rows.map(rowToAttachment);
 }
 
 // ─── Cleanup (called by daily cron) ──────────────────────────────────────────
@@ -396,99 +344,106 @@ export interface CleanupResult {
  *   - `failed` rows older than 30 days → DELETE
  *   - Campaigns with no remaining recipients AND older than 7 days → DELETE
  *   - Attachment URL rows for deleted campaigns → CASCADE DELETE
- * Runs once/day — the extra re-reads here (vs. a single SQL statement) are fine.
+ * Runs once/day.
  */
 export async function runDailyCleanup(): Promise<CleanupResult> {
-  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const cutoff30d  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const cutoff7d   = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const cutoff30d  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const cutoff7d   = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000);
 
-  const recipientRows = await sheets.getRows(RECIPIENTS_TAB);
-  const sentStale = recipientRows.filter((r) => r.status === 'sent' && r.sent_at && String(r.sent_at) < cutoff24h);
-  const failedStale = recipientRows.filter(
-    (r) => (r.status === 'failed' || r.status === 'error') && String(r.created_at) < cutoff30d,
-  );
-  const toDelete = [...sentStale, ...failedStale];
-  if (toDelete.length) {
-    await sheets.deleteRows(RECIPIENTS_TAB, toDelete.map((r) => r._row));
-  }
+  const sentStale = await prisma.campaignRecipient.deleteMany({
+    where: { status: 'sent', sentAt: { lt: cutoff24h } },
+  });
+  const failedStale = await prisma.campaignRecipient.deleteMany({
+    where: { status: { in: ['failed', 'error'] }, createdAt: { lt: cutoff30d } },
+  });
 
   const remainingCampaignIds = new Set(
-    (await sheets.getRows(RECIPIENTS_TAB)).map((r) => String(r.campaign_id)),
+    (await prisma.campaignRecipient.findMany({ select: { campaignId: true }, distinct: ['campaignId'] }))
+      .map((r) => r.campaignId),
   );
-  const campaignRows = await sheets.getRows(CAMPAIGNS_TAB);
-  const staleCampaigns = campaignRows.filter(
-    (r) =>
-      (r.status === 'completed' || r.status === 'failed') &&
-      String(r.updated_at) < cutoff7d &&
-      !remainingCampaignIds.has(String(r.id)),
-  );
+  const candidateStaleCampaigns = await prisma.campaign.findMany({
+    where: { status: { in: ['completed', 'failed'] }, updatedAt: { lt: cutoff7d } },
+  });
+  const staleCampaigns = candidateStaleCampaigns.filter((c) => !remainingCampaignIds.has(c.id));
   if (staleCampaigns.length) {
-    await sheets.deleteRows(CAMPAIGNS_TAB, staleCampaigns.map((r) => r._row));
+    await prisma.campaign.deleteMany({ where: { id: { in: staleCampaigns.map((c) => c.id) } } });
   }
 
   const remainingCampaignIdsAfterDelete = new Set(
-    (await sheets.getRows(CAMPAIGNS_TAB)).map((r) => String(r.id)),
+    (await prisma.campaign.findMany({ select: { id: true } })).map((c) => c.id),
   );
-  const attachmentRows = await sheets.getRows(ATTACHMENTS_TAB);
-  const orphanAttachments = attachmentRows.filter((r) => !remainingCampaignIdsAfterDelete.has(String(r.campaign_id)));
-  if (orphanAttachments.length) {
-    await sheets.deleteRows(ATTACHMENTS_TAB, orphanAttachments.map((r) => r._row));
+  const attachmentRows = await prisma.campaignAttachment.findMany({ select: { id: true, campaignId: true } });
+  const orphanAttachmentIds = attachmentRows
+    .filter((r) => !remainingCampaignIdsAfterDelete.has(r.campaignId))
+    .map((r) => r.id);
+  if (orphanAttachmentIds.length) {
+    await prisma.campaignAttachment.deleteMany({ where: { id: { in: orphanAttachmentIds } } });
   }
 
   return {
-    deletedSentRecipients: sentStale.length,
-    deletedFailedRecipients: failedStale.length,
+    deletedSentRecipients: sentStale.count,
+    deletedFailedRecipients: failedStale.count,
     deletedStaleCampaigns: staleCampaigns.length,
-    deletedOrphanAttachments: orphanAttachments.length,
+    deletedOrphanAttachments: orphanAttachmentIds.length,
   };
 }
 
 // ─── Row mappers ──────────────────────────────────────────────────────────────
 
-function rowToCampaign(row: sheets.SheetRow): Campaign {
+function rowToCampaign(row: {
+  id: string; userId: string; label: string; kind: string; status: string;
+  scheduledAt: Date | null; createdAt: Date; updatedAt: Date; totalEmails: number;
+  sentCount: number; failedCount: number; smtpConfigJson: string; templateJson: string; error: string | null;
+}): Campaign {
   return {
-    id: String(row.id),
-    userId: String(row.user_id),
-    label: String(row.label),
+    id: row.id,
+    userId: row.userId,
+    label: row.label,
     kind: row.kind as CampaignKind,
     status: row.status as CampaignStatus,
-    scheduledAt: row.scheduled_at ? String(row.scheduled_at) : undefined,
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-    totalEmails: Number(row.total_emails ?? 0),
-    sentCount: Number(row.sent_count ?? 0),
-    failedCount: Number(row.failed_count ?? 0),
-    smtpConfigJson: String(row.smtp_config_json ?? '{}'),
-    templateJson: String(row.template_json ?? '{}'),
-    error: row.error ? String(row.error) : undefined,
+    scheduledAt: row.scheduledAt?.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    totalEmails: row.totalEmails,
+    sentCount: row.sentCount,
+    failedCount: row.failedCount,
+    smtpConfigJson: row.smtpConfigJson,
+    templateJson: row.templateJson,
+    error: row.error ?? undefined,
   };
 }
 
-function rowToRecipient(row: sheets.SheetRow): CampaignRecipient {
+function rowToRecipient(row: {
+  id: number; campaignId: string; email: string; recipientJson: string; status: string;
+  error: string | null; scheduledAt: Date | null; sentAt: Date | null; createdAt: Date;
+}): CampaignRecipient {
   return {
-    id: Number(row.id),
-    campaignId: String(row.campaign_id),
-    email: String(row.email),
-    recipientJson: String(row.recipient_json),
+    id: row.id,
+    campaignId: row.campaignId,
+    email: row.email,
+    recipientJson: row.recipientJson,
     status: row.status as RecipientStatus,
-    scheduledAt: row.scheduled_at ? String(row.scheduled_at) : undefined,
-    error: row.error ? String(row.error) : undefined,
-    sentAt: row.sent_at ? String(row.sent_at) : undefined,
-    createdAt: String(row.created_at),
+    scheduledAt: row.scheduledAt?.toISOString(),
+    error: row.error ?? undefined,
+    sentAt: row.sentAt?.toISOString(),
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
-function rowToAttachment(row: sheets.SheetRow): CampaignAttachment {
+function rowToAttachment(row: {
+  id: number; campaignId: string; recipientEmail: string | null; attachmentId: string;
+  filename: string; contentType: string; storageUrl: string; fileSizeBytes: number; createdAt: Date;
+}): CampaignAttachment {
   return {
-    id: Number(row.id),
-    campaignId: String(row.campaign_id),
-    recipientEmail: row.recipient_email ? String(row.recipient_email) : undefined,
-    attachmentId: String(row.attachment_id),
-    filename: String(row.filename),
-    contentType: String(row.content_type),
-    storageUrl: String(row.storage_url),
-    fileSizeBytes: Number(row.file_size_bytes ?? 0),
-    createdAt: String(row.created_at),
+    id: row.id,
+    campaignId: row.campaignId,
+    recipientEmail: row.recipientEmail ?? undefined,
+    attachmentId: row.attachmentId,
+    filename: row.filename,
+    contentType: row.contentType,
+    storageUrl: row.storageUrl,
+    fileSizeBytes: row.fileSizeBytes,
+    createdAt: row.createdAt.toISOString(),
   };
 }

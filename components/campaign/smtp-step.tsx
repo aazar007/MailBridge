@@ -276,8 +276,8 @@ export function FigmaSmtpStep({
                 <Field label="From name">
                   <TextInput dir="auto" value={config.fromName} onChange={(v) => set({ fromName: v })} placeholder="AI Club" />
                 </Field>
-                <Field label="Delay between sends" hint="(ms)">
-                  <TextInput value={String(config.delayMs)} onChange={(v) => set({ delayMs: Number(v) || 0 })} placeholder="2000" />
+                <Field label="Delay between sends" hint="(ms, min. 2000)">
+                  <TextInput value={String(config.delayMs)} onChange={(v) => set({ delayMs: Number(v) || 0 })} placeholder="4000" />
                 </Field>
               </div>
             </div>

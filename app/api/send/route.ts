@@ -9,6 +9,7 @@ import { hydrateScheduledAttachmentMap, getAttachmentIdsFromMap, deleteScheduled
 import { deleteWorkSession } from '@/lib/work-session';
 import { assertRecipientLimit } from '@/lib/temp-limits';
 import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
+import { effectiveDelayMs } from '@/lib/send-pacing';
 
 export const maxDuration = 60;
 
@@ -62,8 +63,8 @@ async function sendBatch(
       });
     }
 
-    if (i < recipients.length - 1 && smtpConfig.delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, smtpConfig.delayMs));
+    if (i < recipients.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, effectiveDelayMs(smtpConfig.delayMs)));
     }
   }
 

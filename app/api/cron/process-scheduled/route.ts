@@ -36,6 +36,7 @@ import { ensureDirection } from '@/lib/send-utils';
 import { sendGmailEmail } from '@/lib/gmail-oauth';
 import { sendOutlookEmail, getValidOutlookAccessToken } from '@/lib/outlook-oauth';
 import { withTimeout, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
+import { effectiveDelayMs } from '@/lib/send-pacing';
 
 export const maxDuration = 60;
 
@@ -146,7 +147,7 @@ async function sendCampaignRecipient(recipient: CampaignRecipient, callTimeoutMs
     return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'failed', error: 'Corrupt recipient context JSON', delayMs: 0 };
   }
 
-  const delayMs = Number(smtpConfig.delayMs) || 0;
+  const delayMs = effectiveDelayMs(smtpConfig.delayMs as number | undefined);
 
   try {
     // Live tokens never live in recipient_json — resolved from the

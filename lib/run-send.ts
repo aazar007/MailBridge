@@ -13,6 +13,7 @@ import {
 } from '@/lib/send-job-store';
 import { SEND_TIME_BUDGET_MS, type RunSendJobResult } from '@/lib/send-job-types';
 import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
+import { effectiveDelayMs } from '@/lib/send-pacing';
 
 export interface RunSendInput {
   payload: SendPayload;
@@ -186,10 +187,11 @@ export async function runSendJob(
       batchResults.push({ email: recipient.email, success: false, error: message });
     }
 
-    if (i < pending.length - 1 && smtpConfig.delayMs > 0) {
+    if (i < pending.length - 1) {
+      const delayMs = effectiveDelayMs(smtpConfig.delayMs);
       const elapsed = Date.now() - started;
-      if (elapsed + smtpConfig.delayMs >= budgetMs) break;
-      await new Promise((resolve) => setTimeout(resolve, smtpConfig.delayMs));
+      if (elapsed + delayMs >= budgetMs) break;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
 
@@ -227,8 +229,8 @@ export async function runSend(input: RunSendInput): Promise<SendResultItem[]> {
       results.push({ email: recipient.email, success: false, error: String(err) });
     }
 
-    if (i < recipients.length - 1 && smtpConfig.delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, smtpConfig.delayMs));
+    if (i < recipients.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, effectiveDelayMs(smtpConfig.delayMs)));
     }
   }
 

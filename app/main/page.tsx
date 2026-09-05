@@ -491,7 +491,7 @@ export default function Home() {
     }
   }, []);
 
-  const defaultSmtp: SmtpConfig = { host: 'smtp.gmail.com', port: 587, secure: false, user: '', password: '', fromName: '', delayMs: 2000 };
+  const defaultSmtp: SmtpConfig = { host: 'smtp.gmail.com', port: 587, secure: false, user: '', password: '', fromName: '', delayMs: 4000 };
   const [smtpConfig, setSmtpConfig] = useState<SmtpConfig>(defaultSmtp);
   const [template, setTemplate] = useState<Template>({ subject: '', body: '', signature: '' });
   const hydrated = useRef(false);

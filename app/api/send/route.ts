@@ -8,6 +8,7 @@ import { appendSignatureIfMissing } from '@/lib/email-body';
 import { hydrateScheduledAttachmentMap, getAttachmentIdsFromMap, deleteScheduledAttachments, emptyComposerFiles } from '@/lib/scheduled-attachments';
 import { deleteWorkSession } from '@/lib/work-session';
 import { assertRecipientLimit } from '@/lib/temp-limits';
+import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
 
 export const maxDuration = 60;
 
@@ -110,7 +111,11 @@ export async function POST(req: NextRequest) {
             return;
           }
 
-          const gmailSignature = await getGmailSignature(gmailToken, smtpConfig.user);
+          const gmailSignature = await withTimeout(
+            getGmailSignature(gmailToken, smtpConfig.user),
+            SETUP_CALL_TIMEOUT_MS,
+            'getGmailSignature',
+          ).catch(() => '');
           console.log(`[POST /api/send] gmailSignature length: ${gmailSignature.length}, template.signature length: ${template.signature?.length ?? 0}`);
           const templateWithSig = {
             ...template,
@@ -124,15 +129,19 @@ export async function POST(req: NextRequest) {
             smtpConfig as SmtpConfig,
             attachmentMap,
             async (_recipient, subject, body, toName, attachments) => {
-              await sendGmailEmail(gmailToken, {
-                to: _recipient.email,
-                toName,
-                subject,
-                html: body,
-                fromName: smtpConfig.fromName,
-                fromEmail: smtpConfig.user,
-                attachments,
-              });
+              await withTimeout(
+                sendGmailEmail(gmailToken, {
+                  to: _recipient.email,
+                  toName,
+                  subject,
+                  html: body,
+                  fromName: smtpConfig.fromName,
+                  fromEmail: smtpConfig.user,
+                  attachments,
+                }),
+                SEND_CALL_TIMEOUT_MS,
+                'sendGmailEmail',
+              );
             },
           );
           return;
@@ -148,8 +157,16 @@ export async function POST(req: NextRequest) {
             return;
           }
 
-          const outlookAccessToken = await getValidOutlookAccessToken(outlookToken);
-          const outlookSignature = await getOutlookSignature(outlookAccessToken);
+          const outlookAccessToken = await withTimeout(
+            getValidOutlookAccessToken(outlookToken),
+            SETUP_CALL_TIMEOUT_MS,
+            'getValidOutlookAccessToken',
+          );
+          const outlookSignature = await withTimeout(
+            getOutlookSignature(outlookAccessToken),
+            SETUP_CALL_TIMEOUT_MS,
+            'getOutlookSignature',
+          ).catch(() => '');
           const templateWithSig = {
             ...template,
             signature: template.signature || outlookSignature,
@@ -162,15 +179,19 @@ export async function POST(req: NextRequest) {
             smtpConfig as SmtpConfig,
             attachmentMap,
             async (_recipient, subject, body, toName, attachments) => {
-              await sendOutlookEmail(outlookAccessToken, {
-                to: _recipient.email,
-                toName,
-                subject,
-                html: body,
-                fromName: smtpConfig.fromName,
-                fromEmail: smtpConfig.user,
-                attachments,
-              });
+              await withTimeout(
+                sendOutlookEmail(outlookAccessToken, {
+                  to: _recipient.email,
+                  toName,
+                  subject,
+                  html: body,
+                  fromName: smtpConfig.fromName,
+                  fromEmail: smtpConfig.user,
+                  attachments,
+                }),
+                SEND_CALL_TIMEOUT_MS,
+                'sendOutlookEmail',
+              );
             },
           );
           return;
@@ -179,7 +200,7 @@ export async function POST(req: NextRequest) {
         let transporter;
         try {
           transporter = createTransporter(smtpConfig as SmtpConfig);
-          await transporter.verify();
+          await withTimeout(transporter.verify(), SETUP_CALL_TIMEOUT_MS, 'transporter.verify');
         } catch (err) {
           emit({ type: 'error', fatal: true, message: `SMTP connection failed: ${err}` });
           return;
@@ -192,13 +213,17 @@ export async function POST(req: NextRequest) {
           smtpConfig as SmtpConfig,
           attachmentMap,
           async (_recipient, subject, body, toName, attachments) => {
-            await sendEmail(transporter!, smtpConfig as SmtpConfig, {
-              to: _recipient.email,
-              toName,
-              subject,
-              html: body,
-              attachments,
-            });
+            await withTimeout(
+              sendEmail(transporter!, smtpConfig as SmtpConfig, {
+                to: _recipient.email,
+                toName,
+                subject,
+                html: body,
+                attachments,
+              }),
+              SEND_CALL_TIMEOUT_MS,
+              'sendEmail',
+            );
           },
         );
       } finally {

@@ -12,6 +12,7 @@ import {
   type RecipientResult,
 } from '@/lib/send-job-store';
 import { SEND_TIME_BUDGET_MS, type RunSendJobResult } from '@/lib/send-job-types';
+import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
 
 export interface RunSendInput {
   payload: SendPayload;
@@ -30,7 +31,11 @@ async function prepareSendContext(input: RunSendInput) {
     if (!gmailToken) {
       throw new Error('Gmail not connected when this send was scheduled. Sign in again and reschedule.');
     }
-    const gmailSignature = await getGmailSignature(gmailToken, smtpConfig.user);
+    const gmailSignature = await withTimeout(
+      getGmailSignature(gmailToken, smtpConfig.user),
+      SETUP_CALL_TIMEOUT_MS,
+      'getGmailSignature',
+    ).catch(() => ''); // getGmailSignature already swallows its own errors; a timeout should behave the same way.
     console.log(`[runSendJob] gmailSignature length: ${gmailSignature.length}, template.signature length: ${payload.template.signature?.length ?? 0}`);
     if (!signatureForSend) signatureForSend = gmailSignature;
   }
@@ -39,15 +44,23 @@ async function prepareSendContext(input: RunSendInput) {
     if (!outlookTokens) {
       throw new Error('Outlook not connected when this send was scheduled. Sign in again and reschedule.');
     }
-    outlookAccessToken = await getValidOutlookAccessToken(outlookTokens);
-    const outlookSignature = await getOutlookSignature(outlookAccessToken);
+    outlookAccessToken = await withTimeout(
+      getValidOutlookAccessToken(outlookTokens),
+      SETUP_CALL_TIMEOUT_MS,
+      'getValidOutlookAccessToken',
+    );
+    const outlookSignature = await withTimeout(
+      getOutlookSignature(outlookAccessToken),
+      SETUP_CALL_TIMEOUT_MS,
+      'getOutlookSignature',
+    ).catch(() => '');
     if (!signatureForSend) signatureForSend = outlookSignature;
   }
 
   let transporter;
   if (!useGmailApi && !useOutlookGraph) {
     transporter = createTransporter(smtpConfig as SmtpConfig);
-    await transporter.verify();
+    await withTimeout(transporter.verify(), SETUP_CALL_TIMEOUT_MS, 'transporter.verify');
   }
 
   return { outlookAccessToken, signatureForSend, transporter };
@@ -75,33 +88,45 @@ async function sendOneRecipient(
   const attachments: EmailAttachment[] = attachmentMap[recipient.email] ?? [];
 
   if (useGmailApi) {
-    await sendGmailEmail(gmailToken!, {
-      to: recipient.email,
-      toName,
-      subject,
-      html: body,
-      fromName: smtpConfig.fromName,
-      fromEmail: smtpConfig.user,
-      attachments,
-    });
+    await withTimeout(
+      sendGmailEmail(gmailToken!, {
+        to: recipient.email,
+        toName,
+        subject,
+        html: body,
+        fromName: smtpConfig.fromName,
+        fromEmail: smtpConfig.user,
+        attachments,
+      }),
+      SEND_CALL_TIMEOUT_MS,
+      'sendGmailEmail',
+    );
   } else if (useOutlookGraph) {
-    await sendOutlookEmail(outlookAccessToken!, {
-      to: recipient.email,
-      toName,
-      subject,
-      html: body,
-      fromName: smtpConfig.fromName,
-      fromEmail: smtpConfig.user,
-      attachments,
-    });
+    await withTimeout(
+      sendOutlookEmail(outlookAccessToken!, {
+        to: recipient.email,
+        toName,
+        subject,
+        html: body,
+        fromName: smtpConfig.fromName,
+        fromEmail: smtpConfig.user,
+        attachments,
+      }),
+      SEND_CALL_TIMEOUT_MS,
+      'sendOutlookEmail',
+    );
   } else {
-    await sendEmail(transporter!, smtpConfig as SmtpConfig, {
-      to: recipient.email,
-      toName,
-      subject,
-      html: body,
-      attachments,
-    });
+    await withTimeout(
+      sendEmail(transporter!, smtpConfig as SmtpConfig, {
+        to: recipient.email,
+        toName,
+        subject,
+        html: body,
+        attachments,
+      }),
+      SEND_CALL_TIMEOUT_MS,
+      'sendEmail',
+    );
   }
 }
 

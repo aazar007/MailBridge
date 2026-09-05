@@ -35,6 +35,7 @@ import { appendSignatureIfMissing } from '@/lib/email-body';
 import { ensureDirection } from '@/lib/send-utils';
 import { sendGmailEmail } from '@/lib/gmail-oauth';
 import { sendOutlookEmail, getValidOutlookAccessToken } from '@/lib/outlook-oauth';
+import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
 
 export const maxDuration = 60;
 
@@ -162,36 +163,52 @@ async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<Camp
 
     if (useGmailApi) {
       if (!tokens.gmailToken) throw new Error('Gmail token missing');
-      await sendGmailEmail(tokens.gmailToken, {
-        to: recipient.email,
-        toName,
-        subject,
-        html: body,
-        fromName: String(smtpConfig.fromName ?? ''),
-        fromEmail: String(smtpConfig.user     ?? ''),
-        attachments,
-      });
+      await withTimeout(
+        sendGmailEmail(tokens.gmailToken, {
+          to: recipient.email,
+          toName,
+          subject,
+          html: body,
+          fromName: String(smtpConfig.fromName ?? ''),
+          fromEmail: String(smtpConfig.user     ?? ''),
+          attachments,
+        }),
+        SEND_CALL_TIMEOUT_MS,
+        'sendGmailEmail',
+      );
     } else if (useOutlookGraph) {
       if (!tokens.outlookTokens) throw new Error('Outlook token missing');
-      const accessToken = await getValidOutlookAccessToken(tokens.outlookTokens);
-      await sendOutlookEmail(accessToken, {
-        to: recipient.email,
-        toName,
-        subject,
-        html: body,
-        fromName:  String(smtpConfig.fromName ?? ''),
-        fromEmail: String(smtpConfig.user     ?? ''),
-        attachments,
-      });
+      const accessToken = await withTimeout(
+        getValidOutlookAccessToken(tokens.outlookTokens),
+        SETUP_CALL_TIMEOUT_MS,
+        'getValidOutlookAccessToken',
+      );
+      await withTimeout(
+        sendOutlookEmail(accessToken, {
+          to: recipient.email,
+          toName,
+          subject,
+          html: body,
+          fromName:  String(smtpConfig.fromName ?? ''),
+          fromEmail: String(smtpConfig.user     ?? ''),
+          attachments,
+        }),
+        SEND_CALL_TIMEOUT_MS,
+        'sendOutlookEmail',
+      );
     } else {
       const transporter = createTransporter(smtpConfig as unknown as SmtpConfig);
-      await sendEmail(transporter, smtpConfig as unknown as SmtpConfig, {
-        to: recipient.email,
-        toName,
-        subject,
-        html: body,
-        attachments,
-      });
+      await withTimeout(
+        sendEmail(transporter, smtpConfig as unknown as SmtpConfig, {
+          to: recipient.email,
+          toName,
+          subject,
+          html: body,
+          attachments,
+        }),
+        SEND_CALL_TIMEOUT_MS,
+        'sendEmail',
+      );
     }
 
     return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'sent', delayMs };

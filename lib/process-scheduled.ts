@@ -10,13 +10,22 @@ import {
 import { hydrateScheduledAttachmentMap } from '@/lib/scheduled-attachments';
 import { finalizeScheduledJob } from '@/lib/work-session';
 import { runSendJob } from '@/lib/run-send';
+import { SEND_TIME_BUDGET_MS } from '@/lib/send-job-types';
 
 export async function processDueScheduledJobs(): Promise<{ processed: number; ids: string[] }> {
   await resetStaleProcessingJobs();
   const due = await getDueSendJobs();
   const ids: string[] = [];
+  const started = Date.now();
 
   for (const job of due) {
+    // runSendJob() budgets itself internally, but that's per-job — with
+    // several due jobs in one tick, each budgeting independently could
+    // still add up past this whole function's Vercel maxDuration. Stop
+    // starting new jobs once the shared budget is spent; whatever's left
+    // picks up on the next poll, same as an individual job's own resume.
+    if (Date.now() - started >= SEND_TIME_BUDGET_MS) break;
+
     // Atomically claim the job first — if another concurrent invocation
     // (e.g. an overlapping poll from a second open tab) already claimed it,
     // this returns false and we must not process it again.
@@ -26,12 +35,16 @@ export async function processDueScheduledJobs(): Promise<{ processed: number; id
 
     try {
       const attachmentMap = await hydrateScheduledAttachmentMap(job.payload.attachmentMap);
-      const { done, stats } = await runSendJob({
-        jobId: job.id,
-        payload: { ...job.payload, attachmentMap },
-        gmailToken: job.gmailToken,
-        outlookTokens: job.outlookTokens,
-      });
+      const remainingSharedBudget = SEND_TIME_BUDGET_MS - (Date.now() - started);
+      const { done, stats } = await runSendJob(
+        {
+          jobId: job.id,
+          payload: { ...job.payload, attachmentMap },
+          gmailToken: job.gmailToken,
+          outlookTokens: job.outlookTokens,
+        },
+        remainingSharedBudget,
+      );
 
       job.sentCount = stats.sent;
       job.failedCount = stats.failed;

@@ -73,6 +73,7 @@ async function sendOneRecipient(
   signatureForSend: string,
   outlookAccessToken: string | undefined,
   transporter: ReturnType<typeof createTransporter> | undefined,
+  callTimeoutMs: number,
 ): Promise<void> {
   const { payload, gmailToken } = input;
   const { smtpConfig, template, useOutlookGraph, useGmailApi } = payload;
@@ -98,7 +99,7 @@ async function sendOneRecipient(
         fromEmail: smtpConfig.user,
         attachments,
       }),
-      SEND_CALL_TIMEOUT_MS,
+      callTimeoutMs,
       'sendGmailEmail',
     );
   } else if (useOutlookGraph) {
@@ -112,7 +113,7 @@ async function sendOneRecipient(
         fromEmail: smtpConfig.user,
         attachments,
       }),
-      SEND_CALL_TIMEOUT_MS,
+      callTimeoutMs,
       'sendOutlookEmail',
     );
   } else {
@@ -124,14 +125,25 @@ async function sendOneRecipient(
         html: body,
         attachments,
       }),
-      SEND_CALL_TIMEOUT_MS,
+      callTimeoutMs,
       'sendEmail',
     );
   }
 }
 
-/** Resumable job send — stops before Vercel timeout and continues on next poll. */
-export async function runSendJob(input: RunSendInput & { jobId: string }): Promise<RunSendJobResult> {
+/**
+ * Resumable job send — stops before Vercel timeout and continues on next poll.
+ *
+ * budgetMs bounds THIS call's total time. Defaults to SEND_TIME_BUDGET_MS,
+ * but a caller processing several due jobs in one tick (see
+ * processDueScheduledJobs) must pass whatever's actually left of its own
+ * shared budget — otherwise each job independently getting a fresh 50s
+ * could add up past the whole function's Vercel maxDuration.
+ */
+export async function runSendJob(
+  input: RunSendInput & { jobId: string },
+  budgetMs: number = SEND_TIME_BUDGET_MS,
+): Promise<RunSendJobResult> {
   const { payload, jobId } = input;
   const { smtpConfig, attachmentMap = {} } = payload;
   const pending = await getPendingRecipients(jobId);
@@ -147,7 +159,13 @@ export async function runSendJob(input: RunSendInput & { jobId: string }): Promi
   const recipientResults: RecipientResult[] = [];
 
   for (let i = 0; i < pending.length; i++) {
-    if (Date.now() - started >= SEND_TIME_BUDGET_MS) break;
+    const remainingBudget = budgetMs - (Date.now() - started);
+    if (remainingBudget <= 0) break;
+
+    // Cap this call's own timeout to whatever budget is actually left —
+    // a fixed SEND_CALL_TIMEOUT_MS could still let a call starting near the
+    // budget's edge run past it, and past Vercel's hard maxDuration with it.
+    const callTimeoutMs = Math.min(SEND_CALL_TIMEOUT_MS, remainingBudget);
 
     const recipient = pending[i];
     try {
@@ -158,6 +176,7 @@ export async function runSendJob(input: RunSendInput & { jobId: string }): Promi
         signatureForSend,
         outlookAccessToken,
         transporter,
+        callTimeoutMs,
       );
       recipientResults.push({ email: recipient.email, status: 'sent' });
       batchResults.push({ email: recipient.email, success: true });
@@ -169,7 +188,7 @@ export async function runSendJob(input: RunSendInput & { jobId: string }): Promi
 
     if (i < pending.length - 1 && smtpConfig.delayMs > 0) {
       const elapsed = Date.now() - started;
-      if (elapsed + smtpConfig.delayMs >= SEND_TIME_BUDGET_MS) break;
+      if (elapsed + smtpConfig.delayMs >= budgetMs) break;
       await new Promise((resolve) => setTimeout(resolve, smtpConfig.delayMs));
     }
   }
@@ -201,6 +220,7 @@ export async function runSend(input: RunSendInput): Promise<SendResultItem[]> {
         signatureForSend,
         outlookAccessToken,
         transporter,
+        SEND_CALL_TIMEOUT_MS,
       );
       results.push({ email: recipient.email, success: true });
     } catch (err) {

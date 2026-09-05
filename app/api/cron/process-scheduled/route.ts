@@ -35,12 +35,16 @@ import { appendSignatureIfMissing } from '@/lib/email-body';
 import { ensureDirection } from '@/lib/send-utils';
 import { sendGmailEmail } from '@/lib/gmail-oauth';
 import { sendOutlookEmail, getValidOutlookAccessToken } from '@/lib/outlook-oauth';
-import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
+import { withTimeout, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
 
 export const maxDuration = 60;
 
 // Stop processing when this many milliseconds remain before Vercel's limit.
-const VERCEL_TIMEOUT_MS = 55_000;
+// Needs real margin for the batched applyRecipientResults/reconcileCampaignStatuses
+// writes after the loop, on top of whatever the legacy path above already
+// spent from the same `started` clock — see SEND_TIME_BUDGET_MS for the
+// measured trailing-write overhead that motivated this margin.
+const VERCEL_TIMEOUT_MS = 40_000;
 
 // Max recipients per cron tick — keeps sends manageable and avoids SMTP bans.
 const BATCH_SIZE = 50;
@@ -74,10 +78,16 @@ export async function GET(req: NextRequest) {
 
     for (let i = 0; i < due.length; i++) {
       // Hard-stop before hitting the Vercel function timeout.
-      if (Date.now() - started >= VERCEL_TIMEOUT_MS) break;
+      const remainingBudget = VERCEL_TIMEOUT_MS - (Date.now() - started);
+      if (remainingBudget <= 0) break;
+
+      // Cap this recipient's own call timeout to whatever's actually left —
+      // a fixed per-call timeout could still let a call starting near the
+      // budget's edge run past it, and past Vercel's hard maxDuration with it.
+      const callTimeoutMs = Math.min(SEND_CALL_TIMEOUT_MS, remainingBudget);
 
       const recipient = due[i];
-      const outcome = await sendCampaignRecipient(recipient);
+      const outcome = await sendCampaignRecipient(recipient, callTimeoutMs);
       outcomes.push(outcome);
 
       if (outcome.status === 'sent') results.campaigns.sent++;
@@ -112,7 +122,7 @@ export async function GET(req: NextRequest) {
 
 type CampaignSendOutcome = RecipientResult & { delayMs: number };
 
-async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<CampaignSendOutcome> {
+async function sendCampaignRecipient(recipient: CampaignRecipient, callTimeoutMs: number): Promise<CampaignSendOutcome> {
   let smtpConfig: Record<string, unknown>;
   let template: { subject: string; body: string; signature?: string };
   let useGmailApi = false;
@@ -173,14 +183,14 @@ async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<Camp
           fromEmail: String(smtpConfig.user     ?? ''),
           attachments,
         }),
-        SEND_CALL_TIMEOUT_MS,
+        callTimeoutMs,
         'sendGmailEmail',
       );
     } else if (useOutlookGraph) {
       if (!tokens.outlookTokens) throw new Error('Outlook token missing');
       const accessToken = await withTimeout(
         getValidOutlookAccessToken(tokens.outlookTokens),
-        SETUP_CALL_TIMEOUT_MS,
+        callTimeoutMs,
         'getValidOutlookAccessToken',
       );
       await withTimeout(
@@ -193,7 +203,7 @@ async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<Camp
           fromEmail: String(smtpConfig.user     ?? ''),
           attachments,
         }),
-        SEND_CALL_TIMEOUT_MS,
+        callTimeoutMs,
         'sendOutlookEmail',
       );
     } else {
@@ -206,7 +216,7 @@ async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<Camp
           html: body,
           attachments,
         }),
-        SEND_CALL_TIMEOUT_MS,
+        callTimeoutMs,
         'sendEmail',
       );
     }

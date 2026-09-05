@@ -1,4 +1,5 @@
 import {
+  claimSendJob,
   deleteSendJob,
   getDueSendJobs,
   getJobResults,
@@ -16,8 +17,12 @@ export async function processDueScheduledJobs(): Promise<{ processed: number; id
   const ids: string[] = [];
 
   for (const job of due) {
+    // Atomically claim the job first — if another concurrent invocation
+    // (e.g. an overlapping poll from a second open tab) already claimed it,
+    // this returns false and we must not process it again.
+    const claimed = await claimSendJob(job.id);
+    if (!claimed) continue;
     job.status = 'processing';
-    await saveSendJob(job);
 
     try {
       const attachmentMap = await hydrateScheduledAttachmentMap(job.payload.attachmentMap);

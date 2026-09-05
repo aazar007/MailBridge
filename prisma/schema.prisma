@@ -28,6 +28,7 @@ model SendJob {
   kind        String
   scheduledAt DateTime @map("scheduled_at")
   createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
   status      String
   label       String
   payloadJson String   @map("payload_json") @db.Text

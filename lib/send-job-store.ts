@@ -167,8 +167,36 @@ export async function getDueSendJobs(now = Date.now()): Promise<StoredScheduledJ
   return jobs;
 }
 
-export async function resetStaleProcessingJobs(_maxAgeMs = 3 * 60_000): Promise<void> {
-  const processing = await prisma.sendJob.findMany({ where: { status: 'processing' } });
+/**
+ * Atomically claim a due job before processing it. Backed by a single
+ * conditional UPDATE, so Postgres's row-level locking guarantees only one
+ * concurrent caller ever sees count > 0 — the other(s) get 0 and must skip
+ * the job. This is what prevents two overlapping processDueScheduledJobs()
+ * runs (e.g. two open /main tabs both polling GET /api/schedule) from both
+ * sending the same job's emails, since recipient statuses are otherwise only
+ * written once, in a single batched call at the end of the whole send.
+ */
+export async function claimSendJob(jobId: string): Promise<boolean> {
+  const result = await prisma.sendJob.updateMany({
+    where: { jobId, status: { in: ['pending', 'partial'] } },
+    data: { status: 'processing' },
+  });
+  return result.count > 0;
+}
+
+/**
+ * Reset jobs stuck in 'processing' back to 'partial' so a crashed/killed run
+ * (e.g. a timed-out function) doesn't leave a job permanently unprocessable.
+ *
+ * Only resets jobs whose status hasn't changed in maxAgeMs — a genuinely
+ * active run keeps claimSendJob() bumping updatedAt, so this must NOT reset
+ * a job that's merely mid-send. Resetting an actively-processing job here
+ * would let the next poll re-claim and resend it, duplicating every email.
+ */
+export async function resetStaleProcessingJobs(maxAgeMs = 3 * 60_000): Promise<void> {
+  const processing = await prisma.sendJob.findMany({
+    where: { status: 'processing', updatedAt: { lt: new Date(Date.now() - maxAgeMs) } },
+  });
   if (!processing.length) return;
 
   await prisma.$transaction(

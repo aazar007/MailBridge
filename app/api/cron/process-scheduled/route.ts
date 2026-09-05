@@ -71,15 +71,25 @@ export async function GET(req: NextRequest) {
     const due = await getDueCampaignRecipients(BATCH_SIZE);
     const outcomes: RecipientResult[] = [];
 
-    for (const recipient of due) {
+    for (let i = 0; i < due.length; i++) {
       // Hard-stop before hitting the Vercel function timeout.
       if (Date.now() - started >= VERCEL_TIMEOUT_MS) break;
 
+      const recipient = due[i];
       const outcome = await sendCampaignRecipient(recipient);
       outcomes.push(outcome);
 
       if (outcome.status === 'sent') results.campaigns.sent++;
       else results.campaigns.failed++;
+
+      // Respect the campaign's own delay-between-sends setting so bulk
+      // campaign sends get the same provider-friendly pacing as the legacy
+      // job path (lib/run-send.ts) and instant send (app/api/send/route.ts).
+      if (i < due.length - 1 && outcome.delayMs > 0) {
+        const elapsed = Date.now() - started;
+        if (elapsed + outcome.delayMs >= VERCEL_TIMEOUT_MS) break;
+        await new Promise((resolve) => setTimeout(resolve, outcome.delayMs));
+      }
     }
 
     // One batched write for every recipient touched this tick, instead of
@@ -97,9 +107,11 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// ─── Send one campaign recipient's email (no Sheets writes here) ───────────────
+// ─── Send one campaign recipient's email (batched DB writes happen in the caller) ───
 
-async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<RecipientResult> {
+type CampaignSendOutcome = RecipientResult & { delayMs: number };
+
+async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<CampaignSendOutcome> {
   let smtpConfig: Record<string, unknown>;
   let template: { subject: string; body: string; signature?: string };
   let useGmailApi = false;
@@ -120,12 +132,14 @@ async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<Reci
     useGmailApi = !!ctx.useGmailApi;
     useOutlookGraph = !!ctx.useOutlookGraph;
   } catch {
-    return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'failed', error: 'Corrupt recipient context JSON' };
+    return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'failed', error: 'Corrupt recipient context JSON', delayMs: 0 };
   }
 
+  const delayMs = Number(smtpConfig.delayMs) || 0;
+
   try {
-    // Live tokens never live in recipient_json — resolved from the Turso
-    // side-table by campaign_id instead (see lib/token-store.ts).
+    // Live tokens never live in recipient_json — resolved from the
+    // send_tokens table by campaign_id instead (see lib/token-store.ts).
     const tokens = (useGmailApi || useOutlookGraph) ? await getTokens(recipient.campaignId) : {};
 
     const recipientData = JSON.parse(recipient.recipientJson) as Record<string, string>;
@@ -180,9 +194,9 @@ async function sendCampaignRecipient(recipient: CampaignRecipient): Promise<Reci
       });
     }
 
-    return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'sent' };
+    return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'sent', delayMs };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'failed', error: message };
+    return { recipientId: recipient.id, campaignId: recipient.campaignId, status: 'failed', error: message, delayMs };
   }
 }

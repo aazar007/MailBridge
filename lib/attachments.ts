@@ -148,8 +148,16 @@ export function getSafeAttachmentContentType(type: unknown): string {
   return 'application/octet-stream';
 }
 
-/** Sheets cells max ~50k chars — keep base64 chunks under that limit. */
-export const ATTACHMENT_CHUNK_CHARACTERS = 40_000;
+/**
+ * Postgres TEXT columns have no meaningful size limit (this was a Google
+ * Sheets cell-size limit, ~50k chars, from before the Prisma migration —
+ * left at that value it fragmented an ~8MB attachment into 260+ database
+ * rows, which is what made loading attachments at send time slow enough to
+ * exhaust the whole send function's time budget). This is now sized to fit
+ * comfortably under one HTTP request body (see MAX_CHUNK_CHARACTERS in
+ * app/api/session/files/route.ts) — one client chunk becomes one row.
+ */
+export const ATTACHMENT_CHUNK_CHARACTERS = 900_000;
 
 export function splitAttachmentContent(content: string): string[] {
   if (!content) return [''];

@@ -7,11 +7,10 @@ import {
 import { runPool } from '@/lib/upload-pool';
 
 const FILES_API = '/api/session/files';
-// Each batch now costs ~1-3 Sheets API calls (was up to 8) since the backend
-// bulk-saves a whole batch in one read + one write. Still cap concurrency —
-// Sheets' per-minute quota is shared across every user of this app.
 const UPLOAD_CONCURRENCY = 4;
-const CHUNKS_PER_BATCH = 4;
+// One chunk (ATTACHMENT_CHUNK_CHARACTERS, ~900k chars) is already close to a
+// safe single HTTP request body size, so each request carries exactly one.
+const CHUNKS_PER_BATCH = 1;
 
 interface ChunkTask {
   attachmentId: string;

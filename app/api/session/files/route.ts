@@ -14,11 +14,14 @@ import {
 
 export const maxDuration = 60;
 
-/** Accept legacy clients that still send ~950k Turso-sized chunks; re-split before Sheets write. */
+// Safety ceiling on one request's chunk content — comfortably under typical
+// serverless request-body limits. Normal chunks (ATTACHMENT_CHUNK_CHARACTERS,
+// ~900k) fit in one row with no further splitting; this only matters for a
+// stale cached client sending an oversized chunk from before this constant
+// was raised.
 const MAX_CHUNK_CHARACTERS = 950_000;
 const MAX_CHUNKS_PER_REQUEST = 4;
-/** Max sheet pieces one oversized client chunk can expand into. */
-const MAX_SHEET_PIECES_PER_CLIENT_CHUNK = Math.ceil(MAX_CHUNK_CHARACTERS / ATTACHMENT_CHUNK_CHARACTERS);
+const MAX_PIECES_PER_CLIENT_CHUNK = Math.ceil(MAX_CHUNK_CHARACTERS / ATTACHMENT_CHUNK_CHARACTERS);
 
 interface ChunkPayload {
   attachmentId: string;
@@ -70,11 +73,11 @@ function parseChunk(raw: unknown): { chunk: ChunkPayload | null; reason?: string
   };
 }
 
-/** Expand one incoming chunk into the Sheets-row pieces it needs to become — no I/O. */
+/** Expand one incoming chunk into the database rows it needs to become — no I/O. */
 function chunkToPieces(chunk: ChunkPayload): StoredAttachmentChunk[] {
   const pieces = splitAttachmentContent(chunk.content);
 
-  // Normal path: already Sheets-sized (or empty).
+  // Normal path: fits in one row (or empty).
   if (pieces.length <= 1) {
     return [{
       attachmentId: chunk.attachmentId,
@@ -88,18 +91,18 @@ function chunkToPieces(chunk: ChunkPayload): StoredAttachmentChunk[] {
     }];
   }
 
-  // Legacy oversized client chunk → expand into Sheets-safe indices.
-  // sheetIndex = clientChunkIndex * MAX_SHEET_PIECES + pieceIndex
-  if (pieces.length > MAX_SHEET_PIECES_PER_CLIENT_CHUNK) {
-    throw new Error(`Attachment chunk expands to too many Sheets cells (${pieces.length})`);
+  // Stale cached client sending an oversized chunk → expand into row-safe indices.
+  // rowIndex = clientChunkIndex * MAX_PIECES + pieceIndex
+  if (pieces.length > MAX_PIECES_PER_CLIENT_CHUNK) {
+    throw new Error(`Attachment chunk expands to too many rows (${pieces.length})`);
   }
 
-  const sheetChunkCount = chunk.chunkCount * MAX_SHEET_PIECES_PER_CLIENT_CHUNK;
+  const expandedChunkCount = chunk.chunkCount * MAX_PIECES_PER_CLIENT_CHUNK;
   return pieces.map((content, i) => ({
     attachmentId: chunk.attachmentId,
     sessionId: chunk.sessionId,
-    chunkIndex: chunk.chunkIndex * MAX_SHEET_PIECES_PER_CLIENT_CHUNK + i,
-    chunkCount: sheetChunkCount,
+    chunkIndex: chunk.chunkIndex * MAX_PIECES_PER_CLIENT_CHUNK + i,
+    chunkCount: expandedChunkCount,
     filename: chunk.filename,
     contentType: chunk.contentType,
     content,

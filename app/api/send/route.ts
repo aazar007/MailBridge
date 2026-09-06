@@ -11,7 +11,11 @@ import { assertRecipientLimit } from '@/lib/temp-limits';
 import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
 import { effectiveDelayMs } from '@/lib/send-pacing';
 
-export const maxDuration = 60;
+// Instant send has no resumable/chunked continuation (unlike /api/schedule) —
+// it's one live request for the whole recipient list. With the enforced 2s+
+// minimum delay between sends (lib/send-pacing.ts), a full-size batch alone
+// needs well over 60s; Fluid Compute supports up to 300s on this plan.
+export const maxDuration = 300;
 
 function ensureDirection(html: string): string {
   if (/dir\s*=/i.test(html)) return html;

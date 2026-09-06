@@ -3,6 +3,9 @@ export interface EmailAttachment {
   filename: string;
   contentType: string;
   content: string;
+  /** Show inside the email body (like a pasted image) instead of as a
+   *  downloadable file. Referenced via Content-ID (cid:{id}) in the HTML. */
+  inline?: boolean;
 }
 
 export interface SmtpConfigPayload {

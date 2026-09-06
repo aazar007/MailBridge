@@ -231,6 +231,7 @@ export async function sendOutlookEmail(
       name: a.filename,
       contentType: a.contentType,
       contentBytes: a.content,
+      ...(a.inline ? { isInline: true, contentId: a.id } : {}),
     }));
   }
 

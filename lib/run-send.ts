@@ -3,7 +3,7 @@ import { replacePlaceholders, getRecipientName } from '@/lib/template';
 import { sendOutlookEmail, getValidOutlookAccessToken, getOutlookSignature } from '@/lib/outlook-oauth';
 import { sendGmailEmail, getGmailSignature } from '@/lib/gmail-oauth';
 import type { EmailAttachment, SendPayload } from '@/lib/send-types';
-import { appendSignatureIfMissing } from '@/lib/email-body';
+import { appendSignatureIfMissing, injectInlineImages } from '@/lib/email-body';
 import { ensureDirection, type SendResultItem } from '@/lib/send-utils';
 import {
   getPendingRecipients,
@@ -80,14 +80,14 @@ async function sendOneRecipient(
   const { smtpConfig, template, useOutlookGraph, useGmailApi } = payload;
 
   const subject = replacePlaceholders(template.subject, recipient);
+  const attachments: EmailAttachment[] = attachmentMap[recipient.email] ?? [];
   const body = ensureDirection(
     appendSignatureIfMissing(
-      replacePlaceholders(template.body, recipient),
+      injectInlineImages(replacePlaceholders(template.body, recipient), attachments),
       signatureForSend,
     ),
   );
   const toName = getRecipientName(recipient);
-  const attachments: EmailAttachment[] = attachmentMap[recipient.email] ?? [];
 
   if (useGmailApi) {
     await withTimeout(

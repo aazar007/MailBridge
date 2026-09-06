@@ -55,6 +55,7 @@ export async function sendEmail(
       filename: a.filename,
       content: Buffer.from(a.content, 'base64'),
       contentType: a.contentType,
+      ...(a.inline ? { cid: a.id, contentDisposition: 'inline' as const } : {}),
     })),
   });
 }

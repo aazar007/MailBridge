@@ -368,6 +368,7 @@ export function stripAttachmentContent(
     filename: attachment.filename,
     contentType: attachment.contentType,
     content: '',
+    ...(attachment.inline ? { inline: true } : {}),
   };
 }
 
@@ -403,8 +404,11 @@ export async function hydrateScheduledAttachmentMap(
           };
           if (attachment.content) return ensure(attachment);
           const cached = cache.get(attachment.id);
-          if (cached) return cached;
-          const loaded = ensure(await loadScheduledAttachment(attachment.id));
+          if (cached) return { ...cached, inline: attachment.inline };
+          // loadScheduledAttachment reconstructs from files_handler chunk
+          // rows, which have no inline column — carry it over from the
+          // stored job metadata (attachment) instead of losing it here.
+          const loaded = ensure({ ...(await loadScheduledAttachment(attachment.id)), inline: attachment.inline });
           cache.set(attachment.id, loaded);
           return loaded;
         }),

@@ -108,7 +108,7 @@ function formatAddress(email: string, name?: string): string {
   return `"${name.replace(/"/g, '\\"')}" <${email}>`;
 }
 
-function buildRawEmail(payload: {
+export function buildRawEmail(payload: {
   fromEmail: string;
   fromName?: string;
   to: string;
@@ -117,7 +117,9 @@ function buildRawEmail(payload: {
   html: string;
   attachments?: EmailAttachment[];
 }): string {
-  const attachments = payload.attachments ?? [];
+  const allAttachments = payload.attachments ?? [];
+  const inlineAttachments = allAttachments.filter((a) => a.inline);
+  const regularAttachments = allAttachments.filter((a) => !a.inline);
   const text = htmlToText(payload.html);
   const headers = [
     `From: ${formatAddress(payload.fromEmail, payload.fromName)}`,
@@ -126,7 +128,7 @@ function buildRawEmail(payload: {
     'MIME-Version: 1.0',
   ];
 
-  if (attachments.length === 0) {
+  if (allAttachments.length === 0) {
     const boundary = `alt_${Date.now().toString(36)}`;
     return [
       ...headers,
@@ -146,13 +148,8 @@ function buildRawEmail(payload: {
     ].join('\r\n');
   }
 
-  const mixed = `mixed_${Date.now().toString(36)}`;
   const alt = `alt_${Date.now().toString(36)}_2`;
-  const lines = [
-    ...headers,
-    `Content-Type: multipart/mixed; boundary="${mixed}"`,
-    '',
-    `--${mixed}`,
+  const altPart = [
     `Content-Type: multipart/alternative; boundary="${alt}"`,
     '',
     `--${alt}`,
@@ -166,9 +163,49 @@ function buildRawEmail(payload: {
     '',
     Buffer.from(payload.html, 'utf-8').toString('base64'),
     `--${alt}--`,
+  ].join('\r\n');
+
+  // With inline images: multipart/related wraps the alternative text/html
+  // part together with the inline images it references via Content-ID.
+  // Without any, skip this extra layer — keeps the simple case simple.
+  let relatedPart = altPart;
+  if (inlineAttachments.length > 0) {
+    const related = `rel_${Date.now().toString(36)}_3`;
+    const relLines = [
+      `Content-Type: multipart/related; boundary="${related}"`,
+      '',
+      `--${related}`,
+      altPart,
+    ];
+    for (const att of inlineAttachments) {
+      relLines.push(
+        `--${related}`,
+        `Content-Type: ${att.contentType}; name="${att.filename}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-ID: <${att.id}>`,
+        'Content-Disposition: inline',
+        '',
+        att.content,
+      );
+    }
+    relLines.push(`--${related}--`);
+    relatedPart = relLines.join('\r\n');
+  }
+
+  if (regularAttachments.length === 0) {
+    return [...headers, relatedPart].join('\r\n');
+  }
+
+  const mixed = `mixed_${Date.now().toString(36)}`;
+  const lines = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${mixed}"`,
+    '',
+    `--${mixed}`,
+    relatedPart,
   ];
 
-  for (const att of attachments) {
+  for (const att of regularAttachments) {
     lines.push(
       `--${mixed}`,
       `Content-Type: ${att.contentType}; name="${att.filename}"`,

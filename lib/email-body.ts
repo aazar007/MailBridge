@@ -64,6 +64,28 @@ export function appendSignatureIfMissing(body: string, signature: string): strin
   return `${trimmedBody}<br><br>${sig}`;
 }
 
+/**
+ * Appends an <img> tag for every attachment marked inline (that the body
+ * doesn't already reference), so "insert into email" doesn't require the
+ * user to hand-edit HTML — the image just shows up, like a pasted image.
+ * Content-ID convention: `cid:{attachment.id}`, matching the header each
+ * send path sets on the actual inline MIME part.
+ */
+export function injectInlineImages(
+  body: string,
+  attachments: Array<{ id: string; filename: string; inline?: boolean }>,
+): string {
+  const toInsert = attachments.filter((a) => a.inline && !body.includes(`cid:${a.id}`));
+  if (toInsert.length === 0) return body;
+
+  const images = toInsert
+    .map((a) => `<img src="cid:${a.id}" alt="${a.filename.replace(/"/g, '&quot;')}" style="max-width:100%">`)
+    .join('<br>');
+
+  const trimmedBody = body.trim();
+  return trimmedBody ? `${trimmedBody}<br><br>${images}` : images;
+}
+
 export function extractAroundMarker(content: string, marker: string): string {
   const idx = content.indexOf(marker);
   if (idx === -1) return '';

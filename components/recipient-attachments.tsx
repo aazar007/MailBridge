@@ -254,6 +254,10 @@ export function RecipientAttachments({
     onAssignmentsChange({ ...assignments, [email]: cleaned });
   }
 
+  function toggleInline(fileId: string) {
+    onFilesChange(files.map((f) => (f.id === fileId ? { ...f, inline: !f.inline } : f)));
+  }
+
   function removeFile(fileId: string) {
     void deleteAttachmentsFromTurso([fileId]);
     void removeCachedAttachment(fileId);
@@ -309,24 +313,38 @@ export function RecipientAttachments({
             Uploaded ({files.length})
           </p>
           <ul className="flex flex-wrap gap-2">
-            {files.map((f) => (
-              <li
-                key={f.id}
-                dir="auto"
-                className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700"
-              >
-                <span className="truncate max-w-[12rem]">{f.filename}</span>
-                <button
-                  type="button"
-                  onClick={() => removeFile(f.id)}
-                  className="text-gray-400 hover:text-red-600"
-                  title="Delete file"
-                  aria-label={`Remove ${f.filename}`}
+            {files.map((f) => {
+              const isImage = f.contentType.startsWith('image/');
+              return (
+                <li
+                  key={f.id}
+                  dir="auto"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700"
                 >
-                  ✕
-                </button>
-              </li>
-            ))}
+                  <span className="truncate max-w-[12rem]">{f.filename}</span>
+                  {isImage && (
+                    <button
+                      type="button"
+                      onClick={() => toggleInline(f.id)}
+                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors
+                        ${f.inline ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500 hover:bg-gray-300'}`}
+                      title={f.inline ? 'Shown in email body — click to attach as a file instead' : 'Attached as a file — click to show in email body instead'}
+                    >
+                      {f.inline ? 'In body' : 'Attached'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeFile(f.id)}
+                    className="text-gray-400 hover:text-red-600"
+                    title="Delete file"
+                    aria-label={`Remove ${f.filename}`}
+                  >
+                    ✕
+                  </button>
+                </li>
+              );
+            })}
           </ul>
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button

@@ -9,6 +9,28 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const EXTENSION_CONTENT_TYPES: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
+  heic: 'image/heic', heif: 'image/heif',
+};
+
+/** file.type is browser-supplied and unreliable for some formats (HEIC/HEIF
+ *  photos from iPhones commonly report an empty or generic type outside
+ *  Safari) — fall back to the filename extension so "is this an image"
+ *  checks (e.g. the inline-image toggle) don't silently miss real photos. */
+function inferContentType(filename: string, reportedType: string): string {
+  if (reportedType && reportedType !== 'application/octet-stream') return reportedType;
+  const ext = filename.split('.').pop()?.toLowerCase();
+  return (ext && EXTENSION_CONTENT_TYPES[ext]) || reportedType || 'application/octet-stream';
+}
+
+export function isImageAttachment(attachment: { filename: string; contentType: string }): boolean {
+  if (attachment.contentType.startsWith('image/')) return true;
+  const ext = attachment.filename.split('.').pop()?.toLowerCase();
+  return !!ext && ext in EXTENSION_CONTENT_TYPES;
+}
+
 export function readFileAsAttachment(file: File): Promise<EmailAttachment> {
   if (file.size > MAX_FILE_BYTES) {
     return Promise.reject(new Error(`${file.name} is too large (max ${formatFileSize(MAX_FILE_BYTES)})`));
@@ -32,7 +54,7 @@ export function readFileAsAttachment(file: File): Promise<EmailAttachment> {
         resolve({
           id: createId('att_'),
           filename: file.name,
-          contentType: file.type || 'application/octet-stream',
+          contentType: inferContentType(file.name, file.type),
           content: base64,
         });
       } catch (err) {

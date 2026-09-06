@@ -503,11 +503,23 @@ export function validateRecipientsStep(recipients: Recipient[]): string | null {
   return null;
 }
 
-export async function fetchPreviews(template: Template, recipients: Recipient[]): Promise<Preview[]> {
+export async function fetchPreviews(
+  template: Template,
+  recipients: Recipient[],
+  attachmentMap?: Record<string, EmailAttachment[]>,
+): Promise<Preview[]> {
+  // Only inline-marked attachments actually affect the rendered preview —
+  // dropping regular file attachments here keeps the request payload small.
+  const inlineOnlyMap = attachmentMap
+    ? Object.fromEntries(
+        Object.entries(attachmentMap).map(([email, files]) => [email, files.filter((f) => f.inline)]),
+      )
+    : undefined;
+
   const res = await fetch('/api/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ template, recipients }),
+    body: JSON.stringify({ template, recipients, attachmentMap: inlineOnlyMap }),
   });
   const data = await res.json();
   return data.previews ?? [];

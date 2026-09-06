@@ -68,18 +68,24 @@ export function appendSignatureIfMissing(body: string, signature: string): strin
  * Appends an <img> tag for every attachment marked inline (that the body
  * doesn't already reference), so "insert into email" doesn't require the
  * user to hand-edit HTML — the image just shows up, like a pasted image.
- * Content-ID convention: `cid:{attachment.id}`, matching the header each
- * send path sets on the actual inline MIME part.
+ *
+ * Default src is the Content-ID convention (`cid:{attachment.id}`), matching
+ * the header each send path sets on the actual inline MIME part. The
+ * in-browser Preview step can't resolve cid: URLs (that only works inside a
+ * real email client rendering the actual MIME message), so it passes a
+ * `srcFor` that builds a data: URI from the attachment's own base64 content
+ * instead — same body-injection logic, different pixel source.
  */
 export function injectInlineImages(
   body: string,
-  attachments: Array<{ id: string; filename: string; inline?: boolean }>,
+  attachments: Array<{ id: string; filename: string; inline?: boolean; contentType?: string; content?: string }>,
+  srcFor: (a: { id: string; filename: string; contentType?: string; content?: string }) => string = (a) => `cid:${a.id}`,
 ): string {
   const toInsert = attachments.filter((a) => a.inline && !body.includes(`cid:${a.id}`));
   if (toInsert.length === 0) return body;
 
   const images = toInsert
-    .map((a) => `<img src="cid:${a.id}" alt="${a.filename.replace(/"/g, '&quot;')}" style="max-width:100%">`)
+    .map((a) => `<img src="${srcFor(a)}" alt="${a.filename.replace(/"/g, '&quot;')}" style="max-width:100%">`)
     .join('<br>');
 
   const trimmedBody = body.trim();

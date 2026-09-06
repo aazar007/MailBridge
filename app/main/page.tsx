@@ -795,7 +795,7 @@ export default function Home() {
       setRecipientsError('');
       setPreviewLoading(true);
       try {
-        const p = await fetchPreviews(template, recipients);
+        const p = await fetchPreviews(template, recipients, attachmentMap);
         setPreviews(p);
         advanceStep(4);
       } catch (e) {

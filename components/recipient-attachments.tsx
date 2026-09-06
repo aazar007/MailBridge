@@ -6,6 +6,7 @@ import {
   autoMatchFile,
   collectLetters,
   formatFileSize,
+  isImageAttachment,
   letterMatchesFilter,
   readFileAsAttachment,
 } from '@/lib/attachments';
@@ -314,7 +315,7 @@ export function RecipientAttachments({
           </p>
           <ul className="flex flex-wrap gap-2">
             {files.map((f) => {
-              const isImage = f.contentType.startsWith('image/');
+              const isImage = isImageAttachment(f);
               return (
                 <li
                   key={f.id}

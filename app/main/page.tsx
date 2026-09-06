@@ -156,10 +156,10 @@ function SendStep({
   }
 
   // Instant send is a resumable background job (same pipeline as scheduled
-  // sends, chunked with rest periods between groups) rather than one
-  // continuously-streamed request — this gives it the same delay pacing,
-  // timeout safety, and provider-friendly chunking scheduled sends already
-  // have. Progress advances in chunk-sized steps, not per-recipient.
+  // sends) rather than one continuously-streamed request — this gives it
+  // the same delay pacing and timeout safety scheduled sends already have.
+  // Progress advances in bursts (as much as fits in one poll's time
+  // budget), not continuously per-recipient.
   async function pollInstantJob(jobId: string) {
     if (stopPollingRef.current) return;
     let job: PublicScheduledJob | null;
@@ -339,7 +339,7 @@ function SendStep({
                   </div>
                   {scheduleDate && scheduleTime && (
                     <p className="text-xs text-muted-foreground font-mono">
-                      Scheduled for {formatScheduleTime(getScheduledWhen().toISOString())}. For large batches sent in chunks, keep this tab open until it finishes — it drives each chunk forward.
+                      Scheduled for {formatScheduleTime(getScheduledWhen().toISOString())}. For large batches, keep this tab open until it finishes — it drives sending forward.
                     </p>
                   )}
                 </div>
@@ -410,7 +410,7 @@ function SendStep({
             <div className="px-4 py-3 rounded-lg border border-border text-muted-foreground text-center text-sm flex items-center justify-center gap-2">
               <Loader2 className="size-4 animate-spin" />
               {instantJob?.status === 'partial'
-                ? 'Sending in chunks — pausing briefly between groups, continuing automatically…'
+                ? 'Still sending — continuing automatically…'
                 : 'Sending…'}
             </div>
           )}

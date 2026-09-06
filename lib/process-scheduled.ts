@@ -62,7 +62,7 @@ export async function processDueScheduledJobs(): Promise<{
 
       if (!done) {
         job.status = 'partial';
-        job.error = `${stats.sent} sent, ${stats.failed} failed, ${stats.pending} remaining — pausing briefly between chunks, will continue automatically`;
+        job.error = `${stats.sent} sent, ${stats.failed} failed, ${stats.pending} remaining — will continue automatically`;
       } else if (stats.failed === stats.total) {
         job.status = 'failed';
         job.error = job.results.find((r) => !r.success)?.error ?? 'All sends failed';

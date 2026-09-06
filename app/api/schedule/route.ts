@@ -67,10 +67,10 @@ export async function POST(req: NextRequest) {
   }
 
   // "Send now" reuses this same resumable job pipeline instead of a separate
-  // live-streamed code path — chunking, delay pacing, atomic claiming, and
-  // timeout guards only need to be correct once. The trade-off is that
-  // progress advances in chunks (see CHUNK_SIZE/CHUNK_GAP_MS) rather than
-  // continuously per-recipient.
+  // live-streamed code path — delay pacing, atomic claiming, and timeout
+  // guards only need to be correct once. The trade-off is that progress
+  // advances in bursts (however many recipients fit in one poll's time
+  // budget, paced by delayMs) rather than continuously per-recipient.
   const effectiveScheduledAt = instant ? new Date().toISOString() : scheduledAt;
 
   if (!instant) {

@@ -27,6 +27,7 @@ export async function createScheduledJob(input: {
   label: string;
   payload: SendPayload;
   sessionId?: string;
+  instant?: boolean;
 }): Promise<PublicScheduledJob> {
   const res = await fetch('/api/schedule', {
     method: 'POST',
@@ -35,6 +36,16 @@ export async function createScheduledJob(input: {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? 'Failed to schedule send');
+  return data;
+}
+
+/** Pure read of one job's current progress — used to poll an instant send's
+ *  live sent/failed count without re-fetching the whole active-jobs list. */
+export async function fetchScheduledJob(id: string): Promise<PublicScheduledJob | null> {
+  const res = await fetch(`/api/schedule/${id}`, { cache: 'no-store' });
+  if (res.status === 404) return null;
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? 'Failed to load send status');
   return data;
 }
 

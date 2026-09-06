@@ -32,10 +32,10 @@ import {
 import type { EmailAttachment, SendPayload } from '@/lib/send-types';
 import { buildAttachmentMap } from '@/lib/attachments';
 import { createId } from '@/lib/id';
-import { executeSend } from '@/lib/send-client';
 import {
   cancelScheduledJob,
   createScheduledJob,
+  fetchScheduledJob,
   fetchScheduledJobs,
   updateScheduledJobTime,
   type PublicScheduledJob,
@@ -77,12 +77,6 @@ interface Preview {
   body: string;
 }
 
-interface SendResult {
-  email: string;
-  success: boolean;
-  error?: string;
-}
-
 // ─── Step 5: Send ─────────────────────────────────────────────────────────────
 
 function SendStep({
@@ -114,10 +108,9 @@ function SendStep({
   onSendComplete?: () => void;
   onFooterIdleChange?: (idle: boolean) => void;
 }) {
-  const [results, setResults] = useState<SendResult[]>([]);
   const [sending, setSending] = useState(false);
   const [scheduling, setScheduling] = useState(false);
-  const [total, setTotal] = useState(0);
+  const [instantJob, setInstantJob] = useState<PublicScheduledJob | null>(null);
   const [error, setError] = useState('');
   const [sendMode, setSendMode] = useState<'now' | 'schedule'>('now');
   const defaultSchedule = new Date(Date.now() + 60 * 60 * 1000);
@@ -126,12 +119,14 @@ function SendStep({
   const [scheduledDone, setScheduledDone] = useState(false);
   const [confirmedScheduleTime, setConfirmedScheduleTime] = useState('');
   const sendCompleteFired = useRef(false);
+  const stopPollingRef = useRef(false);
 
-  const successCount = results.filter((r) => r.success).length;
-  const failCount = results.filter((r) => !r.success).length;
-  const progress = total > 0 ? (results.length / total) * 100 : 0;
-  const done = total > 0 && results.length >= total;
-  const idle = !sending && results.length === 0 && !scheduledDone;
+  const sentCount = instantJob?.sentCount ?? 0;
+  const failCount = instantJob?.failedCount ?? 0;
+  const totalCount = instantJob?.recipientCount ?? 0;
+  const progress = totalCount > 0 ? ((sentCount + failCount) / totalCount) * 100 : 0;
+  const done = !!instantJob && (instantJob.status === 'completed' || instantJob.status === 'failed' || (instantJob.pendingCount ?? 0) === 0);
+  const idle = !sending && !instantJob && !scheduledDone;
 
   useEffect(() => {
     onFooterIdleChange?.(idle);
@@ -143,6 +138,10 @@ function SendStep({
     sendCompleteFired.current = true;
     onSendComplete();
   }, [done, onSendComplete]);
+
+  useEffect(() => {
+    return () => { stopPollingRef.current = true; };
+  }, []);
 
   function buildPayload(): SendPayload {
     return {
@@ -156,27 +155,64 @@ function SendStep({
     };
   }
 
+  // Instant send is a resumable background job (same pipeline as scheduled
+  // sends, chunked with rest periods between groups) rather than one
+  // continuously-streamed request — this gives it the same delay pacing,
+  // timeout safety, and provider-friendly chunking scheduled sends already
+  // have. Progress advances in chunk-sized steps, not per-recipient.
+  async function pollInstantJob(jobId: string) {
+    if (stopPollingRef.current) return;
+    let job: PublicScheduledJob | null;
+    try {
+      job = await fetchScheduledJob(jobId);
+    } catch (e) {
+      setError(`Failed to check send status: ${e}`);
+      setSending(false);
+      return;
+    }
+    if (stopPollingRef.current) return;
+
+    if (job) {
+      setInstantJob(job);
+      const finished = job.status === 'completed' || job.status === 'failed' || (job.pendingCount ?? 0) === 0;
+      if (!finished) {
+        setTimeout(() => pollInstantJob(jobId), 5000);
+        return;
+      }
+    }
+    // job === null means it already finished and was cleaned up between
+    // polls — the last setInstantJob(job) call before that already carried
+    // its final counts, so there's nothing more to update.
+    setSending(false);
+  }
+
   async function startSending() {
     if (attachmentsUploading) {
       setError('Attachments are still uploading. Wait for the upload to finish, then try again.');
       return;
     }
-    setSending(true);
-    setResults([]);
-    setTotal(recipients.length);
     setError('');
+    setInstantJob(null);
+    setSending(true);
+    stopPollingRef.current = false;
 
     try {
-      await executeSend(buildPayload(), (ev) => {
-        if (ev.type === 'sent') {
-          setResults((prev) => [...prev, { email: ev.email!, success: ev.success!, error: ev.error }]);
-        } else if (ev.type === 'error' && ev.fatal) {
-          setError(ev.message ?? 'Send failed');
-        }
+      const job = await createScheduledJob({
+        scheduledAt: new Date().toISOString(),
+        label: `${recipients.length} emails`,
+        payload: buildPayload(),
+        sessionId,
+        instant: true,
       });
+      setInstantJob(job);
+      const finished = job.status === 'completed' || job.status === 'failed' || (job.pendingCount ?? 0) === 0;
+      if (finished) {
+        setSending(false);
+      } else {
+        setTimeout(() => pollInstantJob(job.id), 5000);
+      }
     } catch (e) {
       setError(`Send failed: ${e}`);
-    } finally {
       setSending(false);
     }
   }
@@ -237,7 +273,7 @@ function SendStep({
           </div>
         );
       })()}
-      {!sending && results.length === 0 && !scheduledDone && (
+      {!sending && !instantJob && !scheduledDone && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {[
@@ -348,11 +384,11 @@ function SendStep({
         </div>
       )}
 
-      {(sending || results.length > 0) && (
+      {(sending || instantJob) && (
         <div className="space-y-4">
           <div>
             <div className="flex justify-between text-xs text-muted-foreground font-mono mb-2">
-              <span>{results.length} of {total} sent</span>
+              <span>{sentCount + failCount} of {totalCount} sent{failCount > 0 ? ` (${failCount} failed)` : ''}</span>
               <span>{Math.round(progress)}%</span>
             </div>
             <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
@@ -364,30 +400,20 @@ function SendStep({
             </div>
           </div>
 
-          {done && (
+          {done ? (
             <Notice variant={failCount === 0 ? 'success' : 'warning'}>
               {failCount === 0
-                ? `All ${successCount} emails sent successfully.`
-                : `Done — ${successCount} sent, ${failCount} failed`}
+                ? `All ${sentCount} emails sent successfully.`
+                : `Done — ${sentCount} sent, ${failCount} failed`}
             </Notice>
+          ) : (
+            <div className="px-4 py-3 rounded-lg border border-border text-muted-foreground text-center text-sm flex items-center justify-center gap-2">
+              <Loader2 className="size-4 animate-spin" />
+              {instantJob?.status === 'partial'
+                ? 'Sending in chunks — pausing briefly between groups, continuing automatically…'
+                : 'Sending…'}
+            </div>
           )}
-
-          <div className="max-h-72 overflow-y-auto rounded-lg border border-border divide-y divide-border text-sm">
-            {results.map((r, i) => (
-              <div key={i} className={`flex items-center justify-between px-4 py-2.5 ${r.success ? '' : 'bg-destructive/5'}`}>
-                <span dir="auto" className="text-foreground font-mono text-xs">{r.email}</span>
-                {r.success
-                  ? <span className="text-foreground font-semibold text-xs">Sent</span>
-                  : <span className="text-destructive text-xs max-w-xs truncate">{r.error}</span>}
-              </div>
-            ))}
-            {sending && (
-              <div className="px-4 py-3 text-muted-foreground text-center text-sm flex items-center justify-center gap-2">
-                <Loader2 className="size-4 animate-spin" />
-                Sending…
-              </div>
-            )}
-          </div>
         </div>
       )}
 

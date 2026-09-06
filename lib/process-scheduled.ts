@@ -8,14 +8,23 @@ import {
   saveSendJob,
 } from '@/lib/send-job-store';
 import { hydrateScheduledAttachmentMap } from '@/lib/scheduled-attachments';
-import { finalizeScheduledJob } from '@/lib/work-session';
 import { runSendJob } from '@/lib/run-send';
 import { SEND_TIME_BUDGET_MS } from '@/lib/send-job-types';
+import type { StoredScheduledJob } from '@/lib/send-utils';
 
-export async function processDueScheduledJobs(): Promise<{ processed: number; ids: string[] }> {
+export async function processDueScheduledJobs(): Promise<{
+  processed: number;
+  ids: string[];
+  // The mutated in-memory job as of right after processing — a caller (e.g.
+  // instant send's live-count polling) can read a job's fresh sentCount/
+  // status/results here even though a 'completed' job gets deleted shortly
+  // after by GET /api/schedule's own poll cycle.
+  jobs: StoredScheduledJob[];
+}> {
   await resetStaleProcessingJobs();
   const due = await getDueSendJobs();
   const ids: string[] = [];
+  const jobs: StoredScheduledJob[] = [];
   const started = Date.now();
 
   for (const job of due) {
@@ -72,11 +81,15 @@ export async function processDueScheduledJobs(): Promise<{ processed: number; id
 
     await saveSendJob(job);
     ids.push(job.id);
+    jobs.push(job);
 
-    if (job.status === 'completed') {
-      await finalizeScheduledJob(job.id, job.payload.attachmentMap);
-    }
+    // Deliberately NOT cleaning up a 'completed' job here (no
+    // finalizeScheduledJob call) — a caller polling this job (e.g. instant
+    // send's live count) needs a window to observe its final sentCount/
+    // status before it's gone. GET /api/schedule's own poll cycle already
+    // calls deleteScheduledJobsByStatus(['completed']) shortly after, which
+    // does the same cleanup (job files + job row) once that window has passed.
   }
 
-  return { processed: ids.length, ids };
+  return { processed: ids.length, ids, jobs };
 }

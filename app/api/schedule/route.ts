@@ -49,13 +49,14 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { scheduledAt, label, payload } = body as {
+  const { scheduledAt, label, payload, instant } = body as {
     scheduledAt: string;
     label: string;
     payload: SendPayload;
+    instant?: boolean;
   };
 
-  if (!scheduledAt || !payload?.recipients?.length) {
+  if ((!instant && !scheduledAt) || !payload?.recipients?.length) {
     return NextResponse.json({ error: 'Invalid schedule request' }, { status: 400 });
   }
 
@@ -65,9 +66,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: String(err) }, { status: 400 });
   }
 
-  const when = new Date(scheduledAt);
-  if (Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) {
-    return NextResponse.json({ error: 'Scheduled time must be in the future' }, { status: 400 });
+  // "Send now" reuses this same resumable job pipeline instead of a separate
+  // live-streamed code path — chunking, delay pacing, atomic claiming, and
+  // timeout guards only need to be correct once. The trade-off is that
+  // progress advances in chunks (see CHUNK_SIZE/CHUNK_GAP_MS) rather than
+  // continuously per-recipient.
+  const effectiveScheduledAt = instant ? new Date().toISOString() : scheduledAt;
+
+  if (!instant) {
+    const when = new Date(scheduledAt);
+    if (Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) {
+      return NextResponse.json({ error: 'Scheduled time must be in the future' }, { status: 400 });
+    }
   }
 
   const gmailToken = req.cookies.get('gmail_token')?.value;
@@ -82,7 +92,7 @@ export async function POST(req: NextRequest) {
 
   const job: StoredScheduledJob = {
     id: createId('job_'),
-    scheduledAt,
+    scheduledAt: effectiveScheduledAt,
     createdAt: new Date().toISOString(),
     status: 'pending',
     label: label ?? `${payload.recipients.length} emails`,
@@ -97,7 +107,7 @@ export async function POST(req: NextRequest) {
     ...(outlookTokens ? { outlookTokens } : {}),
   };
 
-  await createSendJob(job, 'scheduled');
+  await createSendJob(job, instant ? 'instant' : 'scheduled');
 
   const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
   const selectedIds = getAttachmentIdsFromMap(payload.attachmentMap);
@@ -125,6 +135,22 @@ export async function POST(req: NextRequest) {
 
   if (sessionId) {
     await finishComposerAfterSchedule(sessionId, job.id);
+  }
+
+  if (instant) {
+    // Kick off the first chunk synchronously so the caller sees real
+    // progress immediately, instead of waiting for the next 30s poll.
+    try {
+      const result = await processDueScheduledJobs();
+      const processedJob = result.jobs.find((j) => j.id === job.id);
+      if (processedJob) {
+        return NextResponse.json(publicJobView(processedJob));
+      }
+    } catch (err) {
+      console.error('[POST /api/schedule] instant first-chunk processing failed:', err);
+      // Job was already created — fall through and return its initial
+      // state. The next poll (GET /api/schedule) will retry it.
+    }
   }
 
   return NextResponse.json(publicJobView(job));

@@ -1,8 +1,6 @@
 import { prisma } from '@/lib/prisma';
-import { deleteSendJob } from '@/lib/send-job-store';
 import {
   deleteComposerStorage,
-  deleteJobFiles,
   emptyComposerFiles,
   getAttachmentIdsFromFileList,
 } from '@/lib/scheduled-attachments';
@@ -65,13 +63,4 @@ export async function finishComposerAfterSchedule(
   _activeJobId?: string,
 ): Promise<void> {
   await clearWorkSessionRecord(sessionId);
-}
-
-export async function finalizeScheduledJob(
-  jobId: string,
-  _attachmentMap: Record<string, EmailAttachment[]> | undefined,
-): Promise<void> {
-  await deleteJobFiles(jobId);
-  await deleteSendJob(jobId);
-  await emptyComposerFiles();
 }

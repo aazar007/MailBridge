@@ -41,8 +41,10 @@ async function sendBatch(
   emit({ type: 'start', total: recipients.length });
   const templateSignature = template.signature ?? '';
 
+  const batchStart = Date.now();
   for (let i = 0; i < recipients.length; i++) {
     const recipient = recipients[i];
+    const sendStart = Date.now();
 
     try {
       const subject = replacePlaceholders(template.subject, recipient);
@@ -56,8 +58,10 @@ async function sendBatch(
       const attachments = attachmentMap[recipient.email] ?? [];
 
       await sendOne(recipient, subject, body, toName, attachments);
+      console.log(`[sendBatch] #${i} ${recipient.email} sent OK, call took ${Date.now() - sendStart}ms, t+${Date.now() - batchStart}ms`);
       emit({ type: 'sent', index: i, email: recipient.email, success: true });
     } catch (err) {
+      console.log(`[sendBatch] #${i} ${recipient.email} FAILED after ${Date.now() - sendStart}ms, t+${Date.now() - batchStart}ms: ${err}`);
       emit({
         type: 'sent',
         index: i,
@@ -68,7 +72,9 @@ async function sendBatch(
     }
 
     if (i < recipients.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, effectiveDelayMs(smtpConfig.delayMs)));
+      const delayMs = effectiveDelayMs(smtpConfig.delayMs);
+      console.log(`[sendBatch] #${i} waiting ${delayMs}ms (configured smtpConfig.delayMs=${smtpConfig.delayMs})`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
 

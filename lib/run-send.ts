@@ -176,6 +176,7 @@ export async function runSendJob(
     const callTimeoutMs = Math.min(SEND_CALL_TIMEOUT_MS, remainingBudget);
 
     const recipient = pending[i];
+    const sendStart = Date.now();
     try {
       await sendOneRecipient(
         input,
@@ -186,9 +187,11 @@ export async function runSendJob(
         transporter,
         callTimeoutMs,
       );
+      console.log(`[runSendJob] #${i} ${recipient.email} sent OK, call took ${Date.now() - sendStart}ms, t+${Date.now() - started}ms`);
       recipientResults.push({ email: recipient.email, status: 'sent' });
       batchResults.push({ email: recipient.email, success: true });
     } catch (err) {
+      console.log(`[runSendJob] #${i} ${recipient.email} FAILED after ${Date.now() - sendStart}ms, t+${Date.now() - started}ms: ${err}`);
       const message = String(err);
       recipientResults.push({ email: recipient.email, status: 'failed', error: message });
       batchResults.push({ email: recipient.email, success: false, error: message });
@@ -197,7 +200,11 @@ export async function runSendJob(
     if (i < pending.length - 1) {
       const delayMs = effectiveDelayMs(smtpConfig.delayMs);
       const elapsed = Date.now() - started;
-      if (elapsed + delayMs >= budgetMs) break;
+      if (elapsed + delayMs >= budgetMs) {
+        console.log(`[runSendJob] #${i} skipping wait, would exceed budget (elapsed=${elapsed} delayMs=${delayMs} budgetMs=${budgetMs})`);
+        break;
+      }
+      console.log(`[runSendJob] #${i} waiting ${delayMs}ms (configured smtpConfig.delayMs=${smtpConfig.delayMs})`);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }

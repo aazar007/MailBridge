@@ -92,6 +92,7 @@ function SendStep({
   useOutlookGraph,
   useGmailApi,
   attachmentMap,
+  attachmentsUploading,
   sessionId,
   onBack,
   onStartOver,
@@ -105,6 +106,7 @@ function SendStep({
   useOutlookGraph?: boolean;
   useGmailApi?: boolean;
   attachmentMap: Record<string, EmailAttachment[]>;
+  attachmentsUploading?: boolean;
   sessionId: string;
   onBack: () => void;
   onStartOver: () => void;
@@ -155,6 +157,10 @@ function SendStep({
   }
 
   async function startSending() {
+    if (attachmentsUploading) {
+      setError('Attachments are still uploading. Wait for the upload to finish, then try again.');
+      return;
+    }
     setSending(true);
     setResults([]);
     setTotal(recipients.length);
@@ -180,6 +186,10 @@ function SendStep({
   }
 
   async function handleSchedule() {
+    if (attachmentsUploading) {
+      setError('Attachments are still uploading. Wait for the upload to finish, then try again.');
+      return;
+    }
     if (!scheduleDate || !scheduleTime) {
       setError('Pick a date and time.');
       return;
@@ -293,7 +303,7 @@ function SendStep({
                   </div>
                   {scheduleDate && scheduleTime && (
                     <p className="text-xs text-muted-foreground font-mono">
-                      Scheduled for {formatScheduleTime(getScheduledWhen().toISOString())}. MailBridge sends automatically — you can close this tab.
+                      Scheduled for {formatScheduleTime(getScheduledWhen().toISOString())}. For large batches sent in chunks, keep this tab open until it finishes — it drives each chunk forward.
                     </p>
                   )}
                 </div>
@@ -303,11 +313,13 @@ function SendStep({
 
           <Btn
             onClick={sendMode === 'now' ? startSending : handleSchedule}
-            disabled={scheduling || (sendMode === 'schedule' && (!scheduleDate || !scheduleTime))}
+            disabled={scheduling || attachmentsUploading || (sendMode === 'schedule' && (!scheduleDate || !scheduleTime))}
             size="lg"
             className="w-full"
           >
-            {scheduling ? (
+            {attachmentsUploading ? (
+              'Uploading attachments…'
+            ) : scheduling ? (
               <><Loader2 className="size-4 animate-spin" />Scheduling…</>
             ) : sendMode === 'schedule' ? (
               <><Calendar className="size-4" />Schedule Campaign</>
@@ -550,6 +562,7 @@ export default function Home() {
   const [previews, setPreviews] = useState<Preview[]>([]);
   const [attachmentFiles, setAttachmentFiles] = useState<EmailAttachment[]>([]);
   const [attachmentAssignments, setAttachmentAssignments] = useState<Record<string, string[]>>({});
+  const [attachmentsUploading, setAttachmentsUploading] = useState(false);
   const [sessionId, setSessionId] = useState('');
   const sessionReady = useRef(false);
   const [scheduledJobs, setScheduledJobs] = useState<PublicScheduledJob[]>([]);
@@ -747,6 +760,10 @@ export default function Home() {
       return;
     }
     if (step === 3) {
+      if (attachmentsUploading) {
+        setRecipientsError('Attachments are still uploading. Wait for the upload to finish, then continue.');
+        return;
+      }
       const err = validateRecipientsStep(recipients);
       if (err) { setRecipientsError(err); return; }
       setRecipientsError('');
@@ -768,7 +785,7 @@ export default function Home() {
   }
 
   const showFooter = (step < 5 || sendStepIdle) && !navigating;
-  const continueDisabled = step === 3 && previewLoading;
+  const continueDisabled = step === 3 && (previewLoading || attachmentsUploading);
 
   return (
     <main className="min-h-screen bg-background flex flex-col">
@@ -950,6 +967,7 @@ export default function Home() {
             sessionId={sessionId}
             onAttachmentFilesChange={setAttachmentFiles}
             onAttachmentAssignmentsChange={setAttachmentAssignments}
+            onAttachmentsUploadingChange={setAttachmentsUploading}
             onRecipientsChange={(r, c) => { setRecipients(r); setColumns(c); }}
             error={recipientsError}
           />
@@ -970,6 +988,7 @@ export default function Home() {
             useOutlookGraph={isOutlookProvider(smtpConfig) && !smtpConfig.password}
             useGmailApi={isGmailProvider(smtpConfig) && !smtpConfig.password}
             attachmentMap={attachmentMap}
+            attachmentsUploading={attachmentsUploading}
             sessionId={sessionId}
             onBack={() => goToStep(4)}
             onStartOver={resetCampaign}

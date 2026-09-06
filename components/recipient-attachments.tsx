@@ -168,10 +168,12 @@ export function RecipientAttachments({
   sessionId,
   onFilesChange,
   onAssignmentsChange,
+  onUploadingChange,
 }: {
   recipients: Recipient[];
   files: EmailAttachment[];
   assignments: Record<string, string[]>;
+  onUploadingChange?: (uploading: boolean) => void;
   sessionId: string;
   onFilesChange: (files: EmailAttachment[]) => void;
   onAssignmentsChange: (assignments: Record<string, string[]>) => void;
@@ -206,6 +208,7 @@ export function RecipientAttachments({
     }
     setUploading(true);
     setUploadProgress(null);
+    onUploadingChange?.(true);
     try {
       const parsed = await Promise.all(Array.from(list).map(readFileAsAttachment));
       await Promise.all(parsed.map((file) => cacheAttachment(file)));
@@ -222,6 +225,7 @@ export function RecipientAttachments({
     } finally {
       setUploading(false);
       setUploadProgress(null);
+      onUploadingChange?.(false);
       e.target.value = '';
     }
   }

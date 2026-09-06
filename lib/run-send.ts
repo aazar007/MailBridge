@@ -11,7 +11,7 @@ import {
   applyRecipientResults,
   type RecipientResult,
 } from '@/lib/send-job-store';
-import { SEND_TIME_BUDGET_MS, type RunSendJobResult } from '@/lib/send-job-types';
+import { SEND_TIME_BUDGET_MS, CHUNK_SIZE, type RunSendJobResult } from '@/lib/send-job-types';
 import { withTimeout, SETUP_CALL_TIMEOUT_MS, SEND_CALL_TIMEOUT_MS } from '@/lib/with-timeout';
 import { effectiveDelayMs } from '@/lib/send-pacing';
 
@@ -160,6 +160,13 @@ export async function runSendJob(
   const recipientResults: RecipientResult[] = [];
 
   for (let i = 0; i < pending.length; i++) {
+    // Cap recipients-per-run independent of the time budget: even paced by
+    // delayMs, several chunks run back-to-back across polls still reads as
+    // one continuous automated burst to a provider watching send patterns.
+    // getDueSendJobs() only re-picks-up a 'partial' job after CHUNK_GAP_MS
+    // of rest, so stopping here is what actually creates that rest window.
+    if (i >= CHUNK_SIZE) break;
+
     const remainingBudget = budgetMs - (Date.now() - started);
     if (remainingBudget <= 0) break;
 

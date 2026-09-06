@@ -4,6 +4,7 @@ import { getTokens, saveTokens, deleteTokens } from '@/lib/token-store';
 import { deleteJobFiles } from '@/lib/scheduled-attachments';
 import type { SendPayload } from '@/lib/send-types';
 import type { SendResultItem, StoredScheduledJob } from '@/lib/send-utils';
+import { CHUNK_GAP_MS } from '@/lib/send-job-types';
 
 export type SendJobKind = 'instant' | 'scheduled';
 
@@ -153,8 +154,16 @@ export async function listActiveSendJobs(): Promise<StoredScheduledJob[]> {
 export async function getDueSendJobs(now = Date.now()): Promise<StoredScheduledJob[]> {
   const rows = await prisma.sendJob.findMany({
     where: {
-      status: { in: ['pending', 'partial'] },
       scheduledAt: { lte: new Date(now) },
+      OR: [
+        // Never touched yet — always due once its scheduled time arrives.
+        { status: 'pending' },
+        // Already sent at least one chunk — only due again once it's
+        // rested CHUNK_GAP_MS since its last chunk (claimSendJob bumps
+        // updatedAt), so consecutive chunks don't read as one continuous
+        // automated burst to the provider.
+        { status: 'partial', updatedAt: { lte: new Date(now - CHUNK_GAP_MS) } },
+      ],
     },
     orderBy: { scheduledAt: 'asc' },
   });

@@ -119,6 +119,7 @@ export function FigmaRecipientsStep({
   sessionId,
   onAttachmentFilesChange,
   onAttachmentAssignmentsChange,
+  onAttachmentsUploadingChange,
   onRecipientsChange,
   error,
 }: {
@@ -130,6 +131,7 @@ export function FigmaRecipientsStep({
   sessionId: string;
   onAttachmentFilesChange: (files: EmailAttachment[]) => void;
   onAttachmentAssignmentsChange: (assignments: Record<string, string[]>) => void;
+  onAttachmentsUploadingChange?: (uploading: boolean) => void;
   onRecipientsChange: (r: Recipient[], cols: string[]) => void;
   error: string;
 }) {
@@ -477,6 +479,7 @@ export function FigmaRecipientsStep({
             sessionId={sessionId}
             onFilesChange={onAttachmentFilesChange}
             onAssignmentsChange={onAttachmentAssignmentsChange}
+            onUploadingChange={onAttachmentsUploadingChange}
           />
         )}
         {attachmentFiles.length > 0 && (

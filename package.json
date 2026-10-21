@@ -36,9 +36,10 @@
     "dotenv": "^17.4.2",
     "postcss": "^8",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "@prisma/cli-engine": "0.9.0"
   },
   "overrides": {
-    "@prisma/cli-engine": "0.9.0"
+    "@prisma/cli-engine": "$@prisma/cli-engine"
   }
 }

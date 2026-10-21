@@ -1,4 +1,4 @@
-import { prisma } from '@/lib/prisma';
+import { db } from '@/lib/db';
 import {
   deleteComposerStorage,
   emptyComposerFiles,
@@ -20,15 +20,14 @@ export async function saveWorkSession(
 ): Promise<void> {
   assertRecipientLimit(data.recipients.length);
 
-  await prisma.workSession.upsert({
-    where: { sessionId },
+  await db.orm.public.WorkSession.upsert({
     create: { sessionId, payloadJson: JSON.stringify(data) },
     update: { payloadJson: JSON.stringify(data) },
   });
 }
 
 export async function loadWorkSession(sessionId: string): Promise<WorkSessionData | null> {
-  const row = await prisma.workSession.findUnique({ where: { sessionId } });
+  const row = await db.orm.public.WorkSession.first({ sessionId });
   if (!row?.payloadJson) return null;
   return JSON.parse(row.payloadJson) as WorkSessionData;
 }
@@ -50,11 +49,11 @@ export async function deleteWorkSession(
   // Use emptyComposerFiles so job-linked attachment files are never wiped.
   await emptyComposerFiles();
 
-  await prisma.workSession.deleteMany({ where: { sessionId } });
+  await db.orm.public.WorkSession.where({ sessionId }).deleteAndCount();
 }
 
 export async function clearWorkSessionRecord(sessionId: string): Promise<void> {
-  await prisma.workSession.deleteMany({ where: { sessionId } });
+  await db.orm.public.WorkSession.where({ sessionId }).deleteAndCount();
 }
 
 /** After scheduling: clear the work session record. */

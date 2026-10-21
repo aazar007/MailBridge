@@ -7,7 +7,9 @@
  * below).
  */
 
-import { prisma } from '@/lib/prisma';
+import { or } from '@prisma/orm-postgres/orm-client';
+import { db } from '@/lib/db';
+import { dbTimestampToIso, toDbTimestamp, toDbTimestampOrNull } from '@/lib/db-time';
 import { saveTokens } from '@/lib/token-store';
 import { createId } from '@/lib/id';
 
@@ -118,40 +120,38 @@ export async function createCampaign(
     await saveTokens(id, { gmailToken, outlookTokens });
   }
 
-  await prisma.campaign.create({
-    data: {
-      id,
-      userId: campaign.userId,
-      label: campaign.label,
-      kind: campaign.kind,
-      status: campaign.status,
-      scheduledAt: campaign.scheduledAt ? new Date(campaign.scheduledAt) : null,
-      createdAt: new Date(now),
-      updatedAt: new Date(now),
-      totalEmails: campaign.totalEmails,
-      sentCount: 0,
-      failedCount: 0,
-      smtpConfigJson: campaign.smtpConfigJson,
-      templateJson: campaign.templateJson,
-      error: campaign.error ?? null,
-    },
+  await db.orm.public.Campaign.create({
+    id,
+    userId: campaign.userId,
+    label: campaign.label,
+    kind: campaign.kind,
+    status: campaign.status,
+    scheduledAt: toDbTimestampOrNull(campaign.scheduledAt),
+    createdAt: toDbTimestamp(now),
+    updatedAt: toDbTimestamp(now),
+    totalEmails: campaign.totalEmails,
+    sentCount: 0,
+    failedCount: 0,
+    smtpConfigJson: campaign.smtpConfigJson,
+    templateJson: campaign.templateJson,
+    error: campaign.error ?? null,
   });
 
   if (sanitizedRecipients.length) {
-    await prisma.campaignRecipient.createMany({
-      data: sanitizedRecipients.map((r) => ({
+    await db.orm.public.CampaignRecipient.createAndCount(
+      sanitizedRecipients.map((r) => ({
         campaignId: id,
         email: r.email,
         recipientJson: r.recipientJson,
         status: r.status,
-        scheduledAt: (r.scheduledAt ?? campaign.scheduledAt) ? new Date(r.scheduledAt ?? campaign.scheduledAt!) : null,
+        scheduledAt: toDbTimestampOrNull(r.scheduledAt ?? campaign.scheduledAt),
       })),
-    });
+    );
   }
 
   if (attachments.length) {
-    await prisma.campaignAttachment.createMany({
-      data: attachments.map((a) => ({
+    await db.orm.public.CampaignAttachment.createAndCount(
+      attachments.map((a) => ({
         campaignId: id,
         recipientEmail: a.recipientEmail ?? null,
         attachmentId: a.attachmentId,
@@ -160,7 +160,7 @@ export async function createCampaign(
         storageUrl: a.storageUrl,
         fileSizeBytes: a.fileSizeBytes,
       })),
-    });
+    );
   }
 
   return campaign;
@@ -169,16 +169,16 @@ export async function createCampaign(
 // ─── Campaign queries ─────────────────────────────────────────────────────────
 
 export async function getCampaign(id: string): Promise<Campaign | null> {
-  const row = await prisma.campaign.findUnique({ where: { id } });
+  const row = await db.orm.public.Campaign.first({ id });
   return row ? rowToCampaign(row) : null;
 }
 
 export async function listCampaigns(userId: string, limit = 100): Promise<Campaign[]> {
-  const rows = await prisma.campaign.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-  });
+  const rows = await db.orm.public.Campaign
+    .where({ userId })
+    .orderBy((c) => c.createdAt.desc())
+    .limit(limit)
+    .all();
   return rows.map(rowToCampaign);
 }
 
@@ -187,36 +187,34 @@ export async function updateCampaignStatus(
   status: CampaignStatus,
   error?: string,
 ): Promise<void> {
-  await prisma.campaign.updateMany({
-    where: { id: campaignId },
-    data: { status, error: error ?? null, updatedAt: new Date() },
-  });
+  await db.orm.public.Campaign
+    .where({ id: campaignId })
+    .updateAndCount({ status, error: error ?? null, updatedAt: toDbTimestamp(new Date()) });
 }
 
 // ─── Recipient queries ────────────────────────────────────────────────────────
 
 /** Pull the next batch of due recipients across ALL campaigns (excluding failed campaigns). */
 export async function getDueCampaignRecipients(batchSize = 50): Promise<CampaignRecipient[]> {
-  const now = new Date();
-  const rows = await prisma.campaignRecipient.findMany({
-    where: {
-      status: { in: ['pending', 'scheduled'] },
-      OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }],
-      campaign: { status: { not: 'failed' } },
-    },
-    orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
-    take: batchSize,
-  });
+  const now = toDbTimestamp(new Date());
+  const rows = await db.orm.public.CampaignRecipient
+    .where((r) => r.status.in(['pending', 'scheduled']))
+    .where((r) => or(r.scheduledAt.isNull(), r.scheduledAt.lte(now)))
+    // The campaign must exist and not be failed (campaignId is a required FK).
+    .where((r) => r.campaign.some((c) => c.status.neq('failed')))
+    .orderBy([(r) => r.scheduledAt.asc(), (r) => r.id.asc()])
+    .limit(batchSize)
+    .all();
 
   return rows.map(rowToRecipient);
 }
 
 /** Fetch all recipients for a campaign (used for display / retry UI). */
 export async function getCampaignRecipients(campaignId: string): Promise<CampaignRecipient[]> {
-  const rows = await prisma.campaignRecipient.findMany({
-    where: { campaignId },
-    orderBy: { id: 'asc' },
-  });
+  const rows = await db.orm.public.CampaignRecipient
+    .where({ campaignId })
+    .orderBy((r) => r.id.asc())
+    .all();
   return rows.map(rowToRecipient);
 }
 
@@ -237,18 +235,22 @@ export interface RecipientResult {
  */
 export async function applyRecipientResults(results: RecipientResult[]): Promise<void> {
   if (!results.length) return;
-  const now = new Date();
+  const sentAt = toDbTimestamp(new Date());
 
-  await prisma.$transaction(
-    results.map((res) =>
-      prisma.campaignRecipient.update({
-        where: { id: res.recipientId },
-        data: res.status === 'sent'
-          ? { status: 'sent', sentAt: now, error: null }
-          : { status: 'failed', error: res.error ?? null },
-      }),
-    ),
-  );
+  // Two separate transactions on purpose (as before): recipient statuses are
+  // committed first, so a failing counter update can never roll back a "sent"
+  // status and cause the cron to email the same recipient again.
+  await db.transaction(async (tx) => {
+    for (const res of results) {
+      await tx.orm.public.CampaignRecipient
+        .where({ id: res.recipientId })
+        .update(
+          res.status === 'sent'
+            ? { status: 'sent', sentAt, error: null }
+            : { status: 'failed', error: res.error ?? null },
+        );
+    }
+  });
 
   const deltas = new Map<string, { sent: number; failed: number }>();
   for (const res of results) {
@@ -257,18 +259,21 @@ export async function applyRecipientResults(results: RecipientResult[]): Promise
     deltas.set(res.campaignId, d);
   }
 
-  await prisma.$transaction(
-    [...deltas.entries()].map(([campaignId, delta]) =>
-      prisma.campaign.updateMany({
-        where: { id: campaignId },
-        data: {
-          sentCount: { increment: delta.sent },
-          failedCount: { increment: delta.failed },
-          updatedAt: now,
-        },
-      }),
-    ),
-  );
+  // Atomic counter bumps. The Prisma 8 ORM has no `increment`, so this goes
+  // through the raw-SQL lane; updated_at is bumped as the old @updatedAt did.
+  await db.transaction(async (tx) => {
+    for (const [campaignId, delta] of deltas) {
+      await tx.execute(
+        db.raw.sql`
+          UPDATE campaigns
+          SET sent_count = sent_count + ${delta.sent},
+              failed_count = failed_count + ${delta.failed},
+              updated_at = (now() AT TIME ZONE 'UTC')
+          WHERE id = ${campaignId}
+        `.affectedCount().build(),
+      );
+    }
+  });
 }
 
 /** Single-recipient convenience wrapper around applyRecipientResults(). */
@@ -293,24 +298,29 @@ export async function reconcileCampaignStatuses(campaignIds: string[]): Promise<
   const uniqueIds = [...new Set(campaignIds)];
   if (!uniqueIds.length) return;
 
-  const now = new Date();
+  const now = toDbTimestamp(new Date());
 
   for (const campaignId of uniqueIds) {
-    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+    const campaign = await db.orm.public.Campaign.first({ id: campaignId });
     if (!campaign) continue;
 
     const [total, pending, failed] = await Promise.all([
-      prisma.campaignRecipient.count({ where: { campaignId } }),
-      prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['pending', 'scheduled'] } } }),
-      prisma.campaignRecipient.count({ where: { campaignId, status: 'failed' } }),
+      db.orm.public.CampaignRecipient.where({ campaignId }).aggregate((a) => ({ n: a.count() })),
+      db.orm.public.CampaignRecipient
+        .where({ campaignId })
+        .where((r) => r.status.in(['pending', 'scheduled']))
+        .aggregate((a) => ({ n: a.count() })),
+      db.orm.public.CampaignRecipient
+        .where({ campaignId, status: 'failed' })
+        .aggregate((a) => ({ n: a.count() })),
     ]);
-    if (total === 0) continue;
-    if (pending > 0) continue; // still in progress
+    if (total.n === 0) continue;
+    if (pending.n > 0) continue; // still in progress
 
-    const status: CampaignStatus = failed === total ? 'failed' : 'completed';
+    const status: CampaignStatus = failed.n === total.n ? 'failed' : 'completed';
     if (campaign.status === status) continue;
 
-    await prisma.campaign.update({ where: { id: campaignId }, data: { status, updatedAt: now } });
+    await db.orm.public.Campaign.where({ id: campaignId }).update({ status, updatedAt: now });
   }
 }
 
@@ -320,12 +330,10 @@ export async function getAttachmentsForRecipient(
   campaignId: string,
   recipientEmail: string,
 ): Promise<CampaignAttachment[]> {
-  const rows = await prisma.campaignAttachment.findMany({
-    where: {
-      campaignId,
-      OR: [{ recipientEmail: null }, { recipientEmail }],
-    },
-  });
+  const rows = await db.orm.public.CampaignAttachment
+    .where({ campaignId })
+    .where((a) => or(a.recipientEmail.isNull(), a.recipientEmail.eq(recipientEmail)))
+    .all();
   return rows.map(rowToAttachment);
 }
 
@@ -347,43 +355,46 @@ export interface CleanupResult {
  * Runs once/day.
  */
 export async function runDailyCleanup(): Promise<CleanupResult> {
-  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const cutoff30d  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const cutoff7d   = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000);
+  const cutoff24h = toDbTimestamp(Date.now() - 24 * 60 * 60 * 1000);
+  const cutoff30d = toDbTimestamp(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const cutoff7d  = toDbTimestamp(Date.now() -  7 * 24 * 60 * 60 * 1000);
 
-  const sentStale = await prisma.campaignRecipient.deleteMany({
-    where: { status: 'sent', sentAt: { lt: cutoff24h } },
-  });
-  const failedStale = await prisma.campaignRecipient.deleteMany({
-    where: { status: { in: ['failed', 'error'] }, createdAt: { lt: cutoff30d } },
-  });
+  const sentStale = await db.orm.public.CampaignRecipient
+    .where({ status: 'sent' })
+    .where((r) => r.sentAt.lt(cutoff24h))
+    .deleteAndCount();
+  const failedStale = await db.orm.public.CampaignRecipient
+    .where((r) => r.status.in(['failed', 'error']))
+    .where((r) => r.createdAt.lt(cutoff30d))
+    .deleteAndCount();
 
   const remainingCampaignIds = new Set(
-    (await prisma.campaignRecipient.findMany({ select: { campaignId: true }, distinct: ['campaignId'] }))
+    (await db.orm.public.CampaignRecipient.select('campaignId').distinct('campaignId').all())
       .map((r) => r.campaignId),
   );
-  const candidateStaleCampaigns = await prisma.campaign.findMany({
-    where: { status: { in: ['completed', 'failed'] }, updatedAt: { lt: cutoff7d } },
-  });
+  const candidateStaleCampaigns = await db.orm.public.Campaign
+    .where((c) => c.status.in(['completed', 'failed']))
+    .where((c) => c.updatedAt.lt(cutoff7d))
+    .all();
   const staleCampaigns = candidateStaleCampaigns.filter((c) => !remainingCampaignIds.has(c.id));
   if (staleCampaigns.length) {
-    await prisma.campaign.deleteMany({ where: { id: { in: staleCampaigns.map((c) => c.id) } } });
+    await db.orm.public.Campaign.where((c) => c.id.in(staleCampaigns.map((s) => s.id))).deleteAndCount();
   }
 
   const remainingCampaignIdsAfterDelete = new Set(
-    (await prisma.campaign.findMany({ select: { id: true } })).map((c) => c.id),
+    (await db.orm.public.Campaign.select('id').all()).map((c) => c.id),
   );
-  const attachmentRows = await prisma.campaignAttachment.findMany({ select: { id: true, campaignId: true } });
+  const attachmentRows = await db.orm.public.CampaignAttachment.select('id', 'campaignId').all();
   const orphanAttachmentIds = attachmentRows
     .filter((r) => !remainingCampaignIdsAfterDelete.has(r.campaignId))
     .map((r) => r.id);
   if (orphanAttachmentIds.length) {
-    await prisma.campaignAttachment.deleteMany({ where: { id: { in: orphanAttachmentIds } } });
+    await db.orm.public.CampaignAttachment.where((a) => a.id.in(orphanAttachmentIds)).deleteAndCount();
   }
 
   return {
-    deletedSentRecipients: sentStale.count,
-    deletedFailedRecipients: failedStale.count,
+    deletedSentRecipients: sentStale,
+    deletedFailedRecipients: failedStale,
     deletedStaleCampaigns: staleCampaigns.length,
     deletedOrphanAttachments: orphanAttachmentIds.length,
   };
@@ -391,9 +402,10 @@ export async function runDailyCleanup(): Promise<CleanupResult> {
 
 // ─── Row mappers ──────────────────────────────────────────────────────────────
 
+// Timestamp columns arrive as strings from the Prisma 8 client (see lib/db-time.ts).
 function rowToCampaign(row: {
   id: string; userId: string; label: string; kind: string; status: string;
-  scheduledAt: Date | null; createdAt: Date; updatedAt: Date; totalEmails: number;
+  scheduledAt: string | null; createdAt: string; updatedAt: string; totalEmails: number;
   sentCount: number; failedCount: number; smtpConfigJson: string; templateJson: string; error: string | null;
 }): Campaign {
   return {
@@ -402,9 +414,9 @@ function rowToCampaign(row: {
     label: row.label,
     kind: row.kind as CampaignKind,
     status: row.status as CampaignStatus,
-    scheduledAt: row.scheduledAt?.toISOString(),
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
+    scheduledAt: row.scheduledAt ? dbTimestampToIso(row.scheduledAt) : undefined,
+    createdAt: dbTimestampToIso(row.createdAt),
+    updatedAt: dbTimestampToIso(row.updatedAt),
     totalEmails: row.totalEmails,
     sentCount: row.sentCount,
     failedCount: row.failedCount,
@@ -416,7 +428,7 @@ function rowToCampaign(row: {
 
 function rowToRecipient(row: {
   id: number; campaignId: string; email: string; recipientJson: string; status: string;
-  error: string | null; scheduledAt: Date | null; sentAt: Date | null; createdAt: Date;
+  error: string | null; scheduledAt: string | null; sentAt: string | null; createdAt: string;
 }): CampaignRecipient {
   return {
     id: row.id,
@@ -424,16 +436,16 @@ function rowToRecipient(row: {
     email: row.email,
     recipientJson: row.recipientJson,
     status: row.status as RecipientStatus,
-    scheduledAt: row.scheduledAt?.toISOString(),
+    scheduledAt: row.scheduledAt ? dbTimestampToIso(row.scheduledAt) : undefined,
     error: row.error ?? undefined,
-    sentAt: row.sentAt?.toISOString(),
-    createdAt: row.createdAt.toISOString(),
+    sentAt: row.sentAt ? dbTimestampToIso(row.sentAt) : undefined,
+    createdAt: dbTimestampToIso(row.createdAt),
   };
 }
 
 function rowToAttachment(row: {
   id: number; campaignId: string; recipientEmail: string | null; attachmentId: string;
-  filename: string; contentType: string; storageUrl: string; fileSizeBytes: number; createdAt: Date;
+  filename: string; contentType: string; storageUrl: string; fileSizeBytes: number; createdAt: string;
 }): CampaignAttachment {
   return {
     id: row.id,
@@ -444,6 +456,6 @@ function rowToAttachment(row: {
     contentType: row.contentType,
     storageUrl: row.storageUrl,
     fileSizeBytes: row.fileSizeBytes,
-    createdAt: row.createdAt.toISOString(),
+    createdAt: dbTimestampToIso(row.createdAt),
   };
 }

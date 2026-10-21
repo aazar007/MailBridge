@@ -21,3 +21,5 @@ npm-debug.log*
 .vercel
 .env*
 generated/
+.prisma-composer/
+.alchemy/

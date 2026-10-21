@@ -1,11 +1,14 @@
-import type { Prisma, SendJob as SendJobRow } from '@/generated/prisma/client';
-import { prisma } from '@/lib/prisma';
+import type { Models } from '@/generated/prisma8/contract.d';
+import { db } from '@/lib/db';
+import { dbTimestampToIso, toDbTimestamp } from '@/lib/db-time';
 import { getTokens, saveTokens, deleteTokens } from '@/lib/token-store';
 import { deleteJobFiles } from '@/lib/scheduled-attachments';
 import type { SendPayload } from '@/lib/send-types';
 import type { SendResultItem, StoredScheduledJob } from '@/lib/send-utils';
 
 export type SendJobKind = 'instant' | 'scheduled';
+
+type SendJobRow = Models.public_SendJob;
 
 async function rowToJob(row: SendJobRow): Promise<StoredScheduledJob | null> {
   try {
@@ -16,8 +19,8 @@ async function rowToJob(row: SendJobRow): Promise<StoredScheduledJob | null> {
 
     return {
       id: row.jobId,
-      scheduledAt: row.scheduledAt.toISOString(),
-      createdAt: row.createdAt.toISOString(),
+      scheduledAt: dbTimestampToIso(row.scheduledAt),
+      createdAt: dbTimestampToIso(row.createdAt),
       status: row.status as StoredScheduledJob['status'],
       label: row.label,
       payload,
@@ -34,12 +37,13 @@ async function rowToJob(row: SendJobRow): Promise<StoredScheduledJob | null> {
   }
 }
 
-function jobToData(job: StoredScheduledJob, kind: SendJobKind): Prisma.SendJobCreateInput {
+// updatedAt is maintained by the contract (set on create and on every update).
+function jobToData(job: StoredScheduledJob, kind: SendJobKind) {
   return {
     jobId: job.id,
     kind,
-    scheduledAt: new Date(job.scheduledAt),
-    createdAt: new Date(job.createdAt),
+    scheduledAt: toDbTimestamp(job.scheduledAt),
+    createdAt: toDbTimestamp(job.createdAt),
     status: job.status,
     label: job.label,
     payloadJson: JSON.stringify(job.payload),
@@ -56,20 +60,20 @@ export async function seedJobRecipients(
   recipients: Record<string, string>[],
 ): Promise<void> {
   const existing = new Set(
-    (await prisma.sendRecipient.findMany({ where: { jobId }, select: { email: true } })).map((r) => r.email),
+    (await db.orm.public.SendRecipient.where({ jobId }).select('email').all()).map((r) => r.email),
   );
 
   const toInsert = recipients.filter((r) => r.email && !existing.has(r.email));
   if (!toInsert.length) return;
 
-  await prisma.sendRecipient.createMany({
-    data: toInsert.map((recipient) => ({
+  await db.orm.public.SendRecipient.createAndCount(
+    toInsert.map((recipient) => ({
       jobId,
       email: recipient.email,
       recipientJson: JSON.stringify(recipient),
       status: 'pending',
     })),
-  });
+  );
 }
 
 export async function createSendJob(
@@ -80,8 +84,7 @@ export async function createSendJob(
   await saveTokens(job.id, { gmailToken: job.gmailToken, outlookTokens: job.outlookTokens });
 
   const data = jobToData(job, kind);
-  await prisma.sendJob.upsert({
-    where: { jobId: job.id },
+  await db.orm.public.SendJob.upsert({
     create: data,
     update: data,
   });
@@ -95,11 +98,11 @@ export async function saveSendJob(job: StoredScheduledJob): Promise<void> {
   await saveTokens(job.id, { gmailToken: job.gmailToken, outlookTokens: job.outlookTokens });
 
   const data = jobToData(job, kind);
-  await prisma.sendJob.updateMany({ where: { jobId: job.id }, data });
+  await db.orm.public.SendJob.where({ jobId: job.id }).updateAndCount(data);
 }
 
 export async function loadSendJob(id: string): Promise<StoredScheduledJob | null> {
-  const row = await prisma.sendJob.findUnique({ where: { jobId: id } });
+  const row = await db.orm.public.SendJob.first({ jobId: id });
   const job = row ? await rowToJob(row) : null;
   if (job) {
     job.results = await getJobResults(id);
@@ -108,7 +111,7 @@ export async function loadSendJob(id: string): Promise<StoredScheduledJob | null
 }
 
 export async function listSendJobs(): Promise<StoredScheduledJob[]> {
-  const rows = await prisma.sendJob.findMany({ orderBy: { scheduledAt: 'asc' } });
+  const rows = await db.orm.public.SendJob.orderBy((j) => j.scheduledAt.asc()).all();
 
   const jobs: StoredScheduledJob[] = [];
   for (const row of rows) {
@@ -122,8 +125,8 @@ export async function listSendJobs(): Promise<StoredScheduledJob[]> {
 }
 
 export async function deleteSendJob(id: string): Promise<void> {
-  await prisma.sendRecipient.deleteMany({ where: { jobId: id } });
-  await prisma.sendJob.deleteMany({ where: { jobId: id } });
+  await db.orm.public.SendRecipient.where({ jobId: id }).deleteAndCount();
+  await db.orm.public.SendJob.where({ jobId: id }).deleteAndCount();
   await deleteTokens(id);
 }
 
@@ -151,13 +154,11 @@ export async function listActiveSendJobs(): Promise<StoredScheduledJob[]> {
 }
 
 export async function getDueSendJobs(now = Date.now()): Promise<StoredScheduledJob[]> {
-  const rows = await prisma.sendJob.findMany({
-    where: {
-      status: { in: ['pending', 'partial'] },
-      scheduledAt: { lte: new Date(now) },
-    },
-    orderBy: { scheduledAt: 'asc' },
-  });
+  const rows = await db.orm.public.SendJob
+    .where((j) => j.status.in(['pending', 'partial']))
+    .where((j) => j.scheduledAt.lte(toDbTimestamp(now)))
+    .orderBy((j) => j.scheduledAt.asc())
+    .all();
 
   const jobs: StoredScheduledJob[] = [];
   for (const row of rows) {
@@ -177,11 +178,11 @@ export async function getDueSendJobs(now = Date.now()): Promise<StoredScheduledJ
  * written once, in a single batched call at the end of the whole send.
  */
 export async function claimSendJob(jobId: string): Promise<boolean> {
-  const result = await prisma.sendJob.updateMany({
-    where: { jobId, status: { in: ['pending', 'partial'] } },
-    data: { status: 'processing' },
-  });
-  return result.count > 0;
+  const claimed = await db.orm.public.SendJob
+    .where({ jobId })
+    .where((j) => j.status.in(['pending', 'partial']))
+    .updateAndCount({ status: 'processing' });
+  return claimed > 0;
 }
 
 /**
@@ -194,26 +195,27 @@ export async function claimSendJob(jobId: string): Promise<boolean> {
  * would let the next poll re-claim and resend it, duplicating every email.
  */
 export async function resetStaleProcessingJobs(maxAgeMs = 3 * 60_000): Promise<void> {
-  const processing = await prisma.sendJob.findMany({
-    where: { status: 'processing', updatedAt: { lt: new Date(Date.now() - maxAgeMs) } },
-  });
+  const cutoff = toDbTimestamp(Date.now() - maxAgeMs);
+  const processing = await db.orm.public.SendJob
+    .where({ status: 'processing' })
+    .where((j) => j.updatedAt.lt(cutoff))
+    .all();
   if (!processing.length) return;
 
-  await prisma.$transaction(
-    processing.map((r) =>
-      prisma.sendJob.update({
-        where: { jobId: r.jobId },
-        data: { status: 'partial', error: r.error || 'Resuming after interruption' },
-      }),
-    ),
-  );
+  await db.transaction(async (tx) => {
+    for (const r of processing) {
+      await tx.orm.public.SendJob
+        .where({ jobId: r.jobId })
+        .update({ status: 'partial', error: r.error || 'Resuming after interruption' });
+    }
+  });
 }
 
 export async function getPendingRecipients(jobId: string): Promise<Record<string, string>[]> {
-  const rows = await prisma.sendRecipient.findMany({
-    where: { jobId, status: 'pending' },
-    orderBy: { id: 'asc' },
-  });
+  const rows = await db.orm.public.SendRecipient
+    .where({ jobId, status: 'pending' })
+    .orderBy((r) => r.id.asc())
+    .all();
   return rows.map((r) => JSON.parse(r.recipientJson));
 }
 
@@ -244,24 +246,36 @@ export async function applyRecipientResults(jobId: string, results: RecipientRes
   if (!results.length) return;
   const now = new Date();
 
-  await prisma.$transaction(
-    results.map((result) =>
-      prisma.sendRecipient.updateMany({
-        where: { jobId, email: result.email },
-        data: result.status === 'sent'
-          ? { status: 'sent', sentAt: now, error: null }
-          : { status: 'failed', error: result.error ?? null },
-      }),
-    ),
-  );
-
+  const sentAt = toDbTimestamp(now);
   const sentDelta = results.filter((r) => r.status === 'sent').length;
   const failedDelta = results.filter((r) => r.status === 'failed').length;
 
-  await prisma.sendJob.updateMany({
-    where: { jobId },
-    data: { sentCount: { increment: sentDelta }, failedCount: { increment: failedDelta } },
+  // Recipient statuses commit first, in their own transaction (as before), so a
+  // failing counter update can never roll back a "sent" status and cause the
+  // job to be emailed again.
+  await db.transaction(async (tx) => {
+    for (const result of results) {
+      await tx.orm.public.SendRecipient
+        .where({ jobId, email: result.email })
+        .updateAndCount(
+          result.status === 'sent'
+            ? { status: 'sent', sentAt, error: null }
+            : { status: 'failed', error: result.error ?? null },
+        );
+    }
   });
+
+  // Atomic counter bump. The Prisma 8 ORM has no `increment`, so this goes
+  // through the raw-SQL lane; updated_at is bumped as the old @updatedAt did.
+  await db.runtime().execute(
+    db.raw.sql`
+      UPDATE send_jobs
+      SET sent_count = sent_count + ${sentDelta},
+          failed_count = failed_count + ${failedDelta},
+          updated_at = (now() AT TIME ZONE 'UTC')
+      WHERE job_id = ${jobId}
+    `.affectedCount().build(),
+  );
 }
 
 export async function getJobStats(jobId: string): Promise<{
@@ -271,18 +285,24 @@ export async function getJobStats(jobId: string): Promise<{
   total: number;
 }> {
   const [sent, failed, total] = await Promise.all([
-    prisma.sendRecipient.count({ where: { jobId, status: 'sent' } }),
-    prisma.sendRecipient.count({ where: { jobId, status: 'failed' } }),
-    prisma.sendRecipient.count({ where: { jobId } }),
+    db.orm.public.SendRecipient.where({ jobId, status: 'sent' }).aggregate((a) => ({ n: a.count() })),
+    db.orm.public.SendRecipient.where({ jobId, status: 'failed' }).aggregate((a) => ({ n: a.count() })),
+    db.orm.public.SendRecipient.where({ jobId }).aggregate((a) => ({ n: a.count() })),
   ]);
-  return { sent, failed, pending: total - sent - failed, total };
+  return {
+    sent: sent.n,
+    failed: failed.n,
+    pending: total.n - sent.n - failed.n,
+    total: total.n,
+  };
 }
 
 export async function getJobResults(jobId: string): Promise<SendResultItem[]> {
-  const rows = await prisma.sendRecipient.findMany({
-    where: { jobId, status: { not: 'pending' } },
-    orderBy: { id: 'asc' },
-  });
+  const rows = await db.orm.public.SendRecipient
+    .where({ jobId })
+    .where((r) => r.status.neq('pending'))
+    .orderBy((r) => r.id.asc())
+    .all();
   return rows.map((r) => ({
     email: r.email,
     success: r.status === 'sent',
@@ -302,35 +322,35 @@ export interface LegacyCleanupResult {
  * runDailyCleanup()).
  */
 export async function runLegacyCleanup(): Promise<LegacyCleanupResult> {
-  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const cutoff24h = toDbTimestamp(Date.now() - 24 * 60 * 60 * 1000);
+  const cutoff30d = toDbTimestamp(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const cutoff7d = toDbTimestamp(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const sentStale = await prisma.sendRecipient.deleteMany({
-    where: { status: 'sent', sentAt: { lt: cutoff24h } },
-  });
-  const failedStale = await prisma.sendRecipient.deleteMany({
-    where: { status: { in: ['failed', 'error'] }, sentAt: { lt: cutoff30d } },
-  });
+  const sentStale = await db.orm.public.SendRecipient
+    .where({ status: 'sent' })
+    .where((r) => r.sentAt.lt(cutoff24h))
+    .deleteAndCount();
+  const failedStale = await db.orm.public.SendRecipient
+    .where((r) => r.status.in(['failed', 'error']))
+    .where((r) => r.sentAt.lt(cutoff30d))
+    .deleteAndCount();
 
   const remainingJobIds = new Set(
-    (await prisma.sendRecipient.findMany({ select: { jobId: true }, distinct: ['jobId'] })).map((r) => r.jobId),
+    (await db.orm.public.SendRecipient.select('jobId').distinct('jobId').all()).map((r) => r.jobId),
   );
-  const staleJobs = await prisma.sendJob.findMany({
-    where: {
-      status: { in: ['completed', 'failed'] },
-      createdAt: { lt: cutoff7d },
-    },
-  });
+  const staleJobs = await db.orm.public.SendJob
+    .where((j) => j.status.in(['completed', 'failed']))
+    .where((j) => j.createdAt.lt(cutoff7d))
+    .all();
   const trulyStale = staleJobs.filter((r) => !remainingJobIds.has(r.jobId));
   if (trulyStale.length) {
-    await prisma.sendJob.deleteMany({ where: { jobId: { in: trulyStale.map((r) => r.jobId) } } });
+    await db.orm.public.SendJob.where((j) => j.jobId.in(trulyStale.map((r) => r.jobId))).deleteAndCount();
     for (const job of trulyStale) await deleteTokens(job.jobId);
   }
 
   return {
-    deletedSentRecipients: sentStale.count,
-    deletedFailedRecipients: failedStale.count,
+    deletedSentRecipients: sentStale,
+    deletedFailedRecipients: failedStale,
     deletedStaleJobs: trulyStale.length,
   };
 }

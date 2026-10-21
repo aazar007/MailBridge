@@ -5,7 +5,9 @@
  * missing (local/dev).
  */
 
-import { prisma, dbConfigured } from '@/lib/prisma';
+import { param } from '@prisma/orm-postgres/relational-core/expression';
+import { db, dbConfigured } from '@/lib/db';
+import { dbTimestampToIso } from '@/lib/db-time';
 import { assertFileLimit } from '@/lib/temp-limits';
 import type { EmailAttachment } from '@/lib/send-types';
 
@@ -23,11 +25,16 @@ export interface StoredAttachmentChunk {
 
 const memoryChunks = new Map<string, Map<number, StoredAttachmentChunk>>();
 
+/** Binds a possibly-missing string as a text parameter (the raw tag can't infer a codec for NULL). */
+function nullableText(value: string | undefined) {
+  return param(value ?? null, { codecId: 'pg/text@1' });
+}
+
 export async function countStoredFiles(): Promise<number> {
   if (!dbConfigured()) {
     return memoryChunks.size;
   }
-  const rows = await prisma.attachmentChunk.findMany({ select: { attachmentId: true } });
+  const rows = await db.orm.public.AttachmentChunk.select('attachmentId').all();
   return new Set(rows.map((r) => r.attachmentId)).size;
 }
 
@@ -56,7 +63,7 @@ export async function saveScheduledAttachmentChunks(
   }
 
   const existingIds = new Set(
-    (await prisma.attachmentChunk.findMany({ select: { attachmentId: true }, distinct: ['attachmentId'] }))
+    (await db.orm.public.AttachmentChunk.select('attachmentId').distinct('attachmentId').all())
       .map((r) => r.attachmentId),
   );
   const newFileIds = new Set(chunks.map((c) => c.attachmentId).filter((id) => !existingIds.has(id)));
@@ -64,32 +71,30 @@ export async function saveScheduledAttachmentChunks(
     assertFileLimit(existingIds.size + newFileIds.size);
   }
 
-  await prisma.$transaction(
-    chunks.map((chunk) =>
-      prisma.attachmentChunk.upsert({
-        where: { attachmentId_chunkIndex: { attachmentId: chunk.attachmentId, chunkIndex: chunk.chunkIndex } },
-        create: {
-          attachmentId: chunk.attachmentId,
-          sessionId: chunk.sessionId,
-          jobId: chunk.jobId,
-          chunkIndex: chunk.chunkIndex,
-          chunkCount: chunk.chunkCount,
-          filename: chunk.filename,
-          contentType: chunk.contentType,
-          contentBase64: chunk.content,
-        },
-        update: {
-          // Never clobber an already-claimed sessionId/jobId with an empty one.
-          sessionId: chunk.sessionId,
-          jobId: chunk.jobId,
-          chunkCount: chunk.chunkCount,
-          filename: chunk.filename,
-          contentType: chunk.contentType,
-          contentBase64: chunk.content,
-        },
-      }),
-    ),
-  );
+  // The ORM's upsert can only conflict on the primary key, and this table is
+  // keyed for upserts by the composite unique (attachment_id, chunk_index), so
+  // write the atomic INSERT … ON CONFLICT through the raw-SQL lane.
+  await db.transaction(async (tx) => {
+    for (const chunk of chunks) {
+      await tx.execute(
+        db.raw.sql`
+          INSERT INTO files_handler
+            (attachment_id, session_id, job_id, chunk_index, chunk_count, filename, content_type, content_base64)
+          VALUES
+            (${chunk.attachmentId}, ${nullableText(chunk.sessionId)}, ${nullableText(chunk.jobId)}, ${chunk.chunkIndex},
+             ${chunk.chunkCount}, ${chunk.filename}, ${chunk.contentType}, ${chunk.content})
+          ON CONFLICT (attachment_id, chunk_index) DO UPDATE SET
+            -- Never clobber an already-claimed session_id/job_id with an empty one.
+            session_id     = COALESCE(EXCLUDED.session_id, files_handler.session_id),
+            job_id         = COALESCE(EXCLUDED.job_id, files_handler.job_id),
+            chunk_count    = EXCLUDED.chunk_count,
+            filename       = EXCLUDED.filename,
+            content_type   = EXCLUDED.content_type,
+            content_base64 = EXCLUDED.content_base64
+        `.affectedCount().build(),
+      );
+    }
+  });
 }
 
 export async function loadScheduledAttachment(attachmentId: string): Promise<EmailAttachment> {
@@ -98,10 +103,10 @@ export async function loadScheduledAttachment(attachmentId: string): Promise<Ema
   if (!dbConfigured()) {
     chunks = Array.from(memoryChunks.get(attachmentId)?.values() ?? []);
   } else {
-    const rows = await prisma.attachmentChunk.findMany({
-      where: { attachmentId },
-      orderBy: { chunkIndex: 'asc' },
-    });
+    const rows = await db.orm.public.AttachmentChunk
+      .where({ attachmentId })
+      .orderBy((r) => r.chunkIndex.asc())
+      .all();
     chunks = rows.map((r) => ({
       attachmentId: r.attachmentId,
       sessionId: r.sessionId ?? undefined,
@@ -111,7 +116,7 @@ export async function loadScheduledAttachment(attachmentId: string): Promise<Ema
       filename: r.filename,
       contentType: r.contentType,
       content: r.contentBase64,
-      createdAt: r.createdAt.toISOString(),
+      createdAt: dbTimestampToIso(r.createdAt),
     }));
     console.log(`[loadScheduledAttachment] id=${attachmentId} rows=${chunks.length}`);
   }
@@ -152,9 +157,10 @@ export async function deleteScheduledAttachments(attachmentIds: string[]): Promi
     return;
   }
 
-  await prisma.attachmentChunk.deleteMany({
-    where: { attachmentId: { in: [...ids] }, jobId: null },
-  });
+  await db.orm.public.AttachmentChunk
+    .where((r) => r.attachmentId.in([...ids]))
+    .where((r) => r.jobId.isNull())
+    .deleteAndCount();
 }
 
 /** Tag selected files with a send job so they survive composer cleanup.
@@ -178,11 +184,9 @@ export async function claimAttachmentsForJob(
   }
 
   console.log(`[claimAttachmentsForJob] jobId=${jobId} ids=${ids.join(',')}`);
-  const result = await prisma.attachmentChunk.updateMany({
-    where: { attachmentId: { in: ids } },
-    data: { jobId },
-  });
-  return result.count;
+  return db.orm.public.AttachmentChunk
+    .where((r) => r.attachmentId.in(ids))
+    .updateAndCount({ jobId });
 }
 
 /** Delete composer uploads in a session that are not in the keep list. */
@@ -204,14 +208,14 @@ export async function deleteUnselectedSessionFiles(
     return removed;
   }
 
-  const result = await prisma.attachmentChunk.deleteMany({
-    where: {
-      jobId: null,
-      sessionId,
-      ...(keep.size > 0 ? { attachmentId: { notIn: [...keep] } } : {}),
-    },
-  });
-  return result.count;
+  // Every path filters before deleting (a write needs a filter on all code paths).
+  const unclaimedInSession = db.orm.public.AttachmentChunk
+    .where((r) => r.jobId.isNull())
+    .where({ sessionId });
+  const keepIds = [...keep];
+  return keepIds.length > 0
+    ? unclaimedInSession.where((r) => r.attachmentId.notIn(keepIds)).deleteAndCount()
+    : unclaimedInSession.deleteAndCount();
 }
 
 /** Clear composer uploads for a session (keeps job-linked files). */
@@ -228,10 +232,10 @@ export async function resetSessionFileBase(sessionId?: string): Promise<number> 
     return removed;
   }
 
-  const result = await prisma.attachmentChunk.deleteMany({
-    where: { jobId: null, ...(sessionId ? { sessionId } : {}) },
-  });
-  return result.count;
+  const unclaimed = db.orm.public.AttachmentChunk.where((r) => r.jobId.isNull());
+  return sessionId
+    ? unclaimed.where({ sessionId }).deleteAndCount()
+    : unclaimed.deleteAndCount();
 }
 
 /** Safe delete: only removes composer/unlinked rows. */
@@ -253,8 +257,7 @@ export async function emptyComposerFiles(_activeJobIds: string[] = []): Promise<
     return removed;
   }
 
-  const result = await prisma.attachmentChunk.deleteMany({ where: { jobId: null } });
-  return result.count;
+  return db.orm.public.AttachmentChunk.where((r) => r.jobId.isNull()).deleteAndCount();
 }
 
 /** Delete composer uploads by id, then wipe all unclaimed rows. */
@@ -296,10 +299,10 @@ export async function purgeLegacySessionFiles(): Promise<number> {
     return removed;
   }
 
-  const result = await prisma.attachmentChunk.deleteMany({
-    where: { jobId: null, sessionId: null },
-  });
-  return result.count;
+  return db.orm.public.AttachmentChunk
+    .where((r) => r.jobId.isNull())
+    .where((r) => r.sessionId.isNull())
+    .deleteAndCount();
 }
 
 /** Remove files whose job row no longer exists. */
@@ -311,13 +314,13 @@ export async function purgeOrphanJobFiles(): Promise<number> {
   const { listSendJobs } = await import('@/lib/send-job-store');
   const activeJobIds = new Set((await listSendJobs()).map((j) => j.id));
 
-  const rows = await prisma.attachmentChunk.findMany({
-    where: { jobId: { not: null } },
-    select: { id: true, jobId: true },
-  });
+  const rows = await db.orm.public.AttachmentChunk
+    .where((r) => r.jobId.isNotNull())
+    .select('id', 'jobId')
+    .all();
   const staleRowIds = rows.filter((r) => r.jobId && !activeJobIds.has(r.jobId)).map((r) => r.id);
   if (!staleRowIds.length) return 0;
-  await prisma.attachmentChunk.deleteMany({ where: { id: { in: staleRowIds } } });
+  await db.orm.public.AttachmentChunk.where((r) => r.id.in(staleRowIds)).deleteAndCount();
   return staleRowIds.length;
 }
 
@@ -335,7 +338,7 @@ export async function deleteJobFiles(jobId: string): Promise<void> {
     return;
   }
 
-  await prisma.attachmentChunk.deleteMany({ where: { jobId } });
+  await db.orm.public.AttachmentChunk.where({ jobId }).deleteAndCount();
 }
 
 export function getAttachmentIdsFromMap(

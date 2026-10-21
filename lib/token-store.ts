@@ -5,7 +5,7 @@
  * or campaign_id (campaigns). Stored in the `send_tokens` table.
  */
 
-import { prisma, dbConfigured } from '@/lib/prisma';
+import { db, dbConfigured } from '@/lib/db';
 
 export interface TokenPair {
   gmailToken?: string;
@@ -22,8 +22,7 @@ export async function saveTokens(key: string, tokens: TokenPair): Promise<void> 
     return;
   }
 
-  await prisma.sendToken.upsert({
-    where: { id: key },
+  await db.orm.public.SendToken.upsert({
     create: { id: key, gmailToken: tokens.gmailToken ?? null, outlookTokens: tokens.outlookTokens ?? null },
     update: { gmailToken: tokens.gmailToken ?? null, outlookTokens: tokens.outlookTokens ?? null },
   });
@@ -34,7 +33,7 @@ export async function getTokens(key: string): Promise<TokenPair> {
     return memoryTokens.get(key) ?? {};
   }
 
-  const row = await prisma.sendToken.findUnique({ where: { id: key } });
+  const row = await db.orm.public.SendToken.first({ id: key });
   if (!row) return {};
   return {
     gmailToken: row.gmailToken ?? undefined,
@@ -47,5 +46,5 @@ export async function deleteTokens(key: string): Promise<void> {
     memoryTokens.delete(key);
     return;
   }
-  await prisma.sendToken.deleteMany({ where: { id: key } });
+  await db.orm.public.SendToken.where({ id: key }).deleteAndCount();
 }

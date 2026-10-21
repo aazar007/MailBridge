@@ -1,6 +1,10 @@
 import { config as loadEnv } from 'dotenv';
 import { definePrismaConfig } from 'prisma/config';
 import { defineConfig as ormConfig, prisma7Schema } from '@prisma/orm-postgres/config';
+import { defineConfig as composer } from "@prisma/composer/config";
+import { nextjsBuild } from "@prisma/composer/nextjs/control";
+import { nodeBuild } from "@prisma/composer/node/control";
+import { prismaCloud, prismaState } from "@prisma/composer-prisma-cloud/control";
 
 // Prisma 8 CLI config (`prisma ...`). The contract is read straight from the
 // existing prisma/schema.prisma, so there is a single schema file while
@@ -21,5 +25,9 @@ export default definePrismaConfig({
       // never connects, so this may be unset during builds that only emit.
       connection: process.env['DIRECT_URL'] ?? process.env['DATABASE_URL'],
     },
+  }),
+  composer: composer({
+    extensions: [prismaCloud({ region: "ap-southeast-1" }), nodeBuild(), nextjsBuild()],
+    state: prismaState(),
   }),
 });

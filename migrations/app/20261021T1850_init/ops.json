@@ -1,0 +1,805 @@
+[
+  {
+    "id": "schema.public",
+    "label": "Create schema \"public\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres"
+    },
+    "precheck": [],
+    "execute": [
+      {
+        "description": "Create schema \"public\"",
+        "sql": "CREATE SCHEMA IF NOT EXISTS \"public\"",
+        "params": []
+      }
+    ],
+    "postcheck": []
+  },
+  {
+    "id": "table.campaign_attachments",
+    "label": "Create table \"campaign_attachments\"",
+    "summary": "Creates table \"campaign_attachments\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "campaign_attachments"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"campaign_attachments\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_attachments\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"campaign_attachments\"",
+        "sql": "CREATE TABLE \"public\".\"campaign_attachments\" (\n  \"attachment_id\" text NOT NULL,\n  \"campaign_id\" text NOT NULL,\n  \"content_type\" text NOT NULL,\n  \"created_at\" timestamp(3) DEFAULT (now()) NOT NULL,\n  \"file_size_bytes\" int4 DEFAULT 0 NOT NULL,\n  \"filename\" text NOT NULL,\n  \"id\" SERIAL NOT NULL,\n  \"recipient_email\" text,\n  \"storage_url\" text NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"campaign_attachments\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_attachments\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.campaign_recipients",
+    "label": "Create table \"campaign_recipients\"",
+    "summary": "Creates table \"campaign_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "campaign_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"campaign_recipients\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_recipients\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"campaign_recipients\"",
+        "sql": "CREATE TABLE \"public\".\"campaign_recipients\" (\n  \"campaign_id\" text NOT NULL,\n  \"created_at\" timestamp(3) DEFAULT (now()) NOT NULL,\n  \"email\" text NOT NULL,\n  \"error\" text,\n  \"id\" SERIAL NOT NULL,\n  \"recipient_json\" text NOT NULL,\n  \"scheduled_at\" timestamp(3),\n  \"sent_at\" timestamp(3),\n  \"status\" text DEFAULT 'pending' NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"campaign_recipients\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_recipients\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.campaigns",
+    "label": "Create table \"campaigns\"",
+    "summary": "Creates table \"campaigns\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "campaigns"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"campaigns\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaigns\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"campaigns\"",
+        "sql": "CREATE TABLE \"public\".\"campaigns\" (\n  \"created_at\" timestamp(3) DEFAULT (now()) NOT NULL,\n  \"error\" text,\n  \"failed_count\" int4 DEFAULT 0 NOT NULL,\n  \"id\" text NOT NULL,\n  \"kind\" text NOT NULL,\n  \"label\" text NOT NULL,\n  \"scheduled_at\" timestamp(3),\n  \"sent_count\" int4 DEFAULT 0 NOT NULL,\n  \"smtp_config_json\" text NOT NULL,\n  \"status\" text NOT NULL,\n  \"template_json\" text NOT NULL,\n  \"total_emails\" int4 DEFAULT 0 NOT NULL,\n  \"updated_at\" timestamp(3) NOT NULL,\n  \"user_id\" text NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"campaigns\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaigns\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.files_handler",
+    "label": "Create table \"files_handler\"",
+    "summary": "Creates table \"files_handler\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "files_handler"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"files_handler\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"files_handler\"",
+        "sql": "CREATE TABLE \"public\".\"files_handler\" (\n  \"attachment_id\" text NOT NULL,\n  \"chunk_count\" int4 NOT NULL,\n  \"chunk_index\" int4 NOT NULL,\n  \"content_base64\" text NOT NULL,\n  \"content_type\" text NOT NULL,\n  \"created_at\" timestamp(3) DEFAULT (now()) NOT NULL,\n  \"filename\" text NOT NULL,\n  \"id\" SERIAL NOT NULL,\n  \"job_id\" text,\n  \"session_id\" text,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"files_handler\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.send_jobs",
+    "label": "Create table \"send_jobs\"",
+    "summary": "Creates table \"send_jobs\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "send_jobs"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"send_jobs\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_jobs\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"send_jobs\"",
+        "sql": "CREATE TABLE \"public\".\"send_jobs\" (\n  \"created_at\" timestamp(3) DEFAULT (now()) NOT NULL,\n  \"error\" text,\n  \"failed_count\" int4 DEFAULT 0 NOT NULL,\n  \"job_id\" text NOT NULL,\n  \"kind\" text NOT NULL,\n  \"label\" text NOT NULL,\n  \"payload_json\" text NOT NULL,\n  \"results_json\" text,\n  \"scheduled_at\" timestamp(3) NOT NULL,\n  \"sent_count\" int4 DEFAULT 0 NOT NULL,\n  \"status\" text NOT NULL,\n  \"total_count\" int4 DEFAULT 0 NOT NULL,\n  \"updated_at\" timestamp(3) NOT NULL,\n  PRIMARY KEY (\"job_id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"send_jobs\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_jobs\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.send_recipients",
+    "label": "Create table \"send_recipients\"",
+    "summary": "Creates table \"send_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "send_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"send_recipients\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_recipients\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"send_recipients\"",
+        "sql": "CREATE TABLE \"public\".\"send_recipients\" (\n  \"email\" text NOT NULL,\n  \"error\" text,\n  \"id\" SERIAL NOT NULL,\n  \"job_id\" text NOT NULL,\n  \"recipient_json\" text NOT NULL,\n  \"sent_at\" timestamp(3),\n  \"status\" text DEFAULT 'pending' NOT NULL,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"send_recipients\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_recipients\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.send_tokens",
+    "label": "Create table \"send_tokens\"",
+    "summary": "Creates table \"send_tokens\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "send_tokens"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"send_tokens\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_tokens\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"send_tokens\"",
+        "sql": "CREATE TABLE \"public\".\"send_tokens\" (\n  \"gmail_token\" text,\n  \"id\" text NOT NULL,\n  \"outlook_tokens\" text,\n  PRIMARY KEY (\"id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"send_tokens\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_tokens\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "table.work_sessions",
+    "label": "Create table \"work_sessions\"",
+    "summary": "Creates table \"work_sessions\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "table",
+        "name": "work_sessions"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure table \"work_sessions\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"work_sessions\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create table \"work_sessions\"",
+        "sql": "CREATE TABLE \"public\".\"work_sessions\" (\n  \"created_at\" timestamp(3) DEFAULT (now()) NOT NULL,\n  \"payload_json\" text NOT NULL,\n  \"session_id\" text NOT NULL,\n  \"updated_at\" timestamp(3) NOT NULL,\n  PRIMARY KEY (\"session_id\")\n)",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify table \"work_sessions\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"work_sessions\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.campaign_attachments.campaign_attachments_campaign_id_idx",
+    "label": "Create index \"campaign_attachments_campaign_id_idx\" on \"campaign_attachments\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "campaign_attachments_campaign_id_idx",
+        "table": "campaign_attachments"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"campaign_attachments_campaign_id_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_attachments_campaign_id_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"campaign_attachments_campaign_id_idx\"",
+        "sql": "CREATE INDEX \"campaign_attachments_campaign_id_idx\" ON \"public\".\"campaign_attachments\" (\"campaign_id\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"campaign_attachments_campaign_id_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_attachments_campaign_id_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.campaign_recipients.campaign_recipients_campaign_id_email_key",
+    "label": "Create index \"campaign_recipients_campaign_id_email_key\" on \"campaign_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "campaign_recipients_campaign_id_email_key",
+        "table": "campaign_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"campaign_recipients_campaign_id_email_key\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_recipients_campaign_id_email_key\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"campaign_recipients_campaign_id_email_key\"",
+        "sql": "CREATE UNIQUE INDEX \"campaign_recipients_campaign_id_email_key\" ON \"public\".\"campaign_recipients\" (\"campaign_id\", \"email\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"campaign_recipients_campaign_id_email_key\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_recipients_campaign_id_email_key\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.campaign_recipients.campaign_recipients_status_scheduled_at_idx",
+    "label": "Create index \"campaign_recipients_status_scheduled_at_idx\" on \"campaign_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "campaign_recipients_status_scheduled_at_idx",
+        "table": "campaign_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"campaign_recipients_status_scheduled_at_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_recipients_status_scheduled_at_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"campaign_recipients_status_scheduled_at_idx\"",
+        "sql": "CREATE INDEX \"campaign_recipients_status_scheduled_at_idx\" ON \"public\".\"campaign_recipients\" (\"status\", \"scheduled_at\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"campaign_recipients_status_scheduled_at_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaign_recipients_status_scheduled_at_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.campaigns.campaigns_user_id_created_at_idx",
+    "label": "Create index \"campaigns_user_id_created_at_idx\" on \"campaigns\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "campaigns_user_id_created_at_idx",
+        "table": "campaigns"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"campaigns_user_id_created_at_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaigns_user_id_created_at_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"campaigns_user_id_created_at_idx\"",
+        "sql": "CREATE INDEX \"campaigns_user_id_created_at_idx\" ON \"public\".\"campaigns\" (\"user_id\", \"created_at\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"campaigns_user_id_created_at_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"campaigns_user_id_created_at_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.files_handler.files_handler_attachment_id_chunk_index_key",
+    "label": "Create index \"files_handler_attachment_id_chunk_index_key\" on \"files_handler\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "files_handler_attachment_id_chunk_index_key",
+        "table": "files_handler"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"files_handler_attachment_id_chunk_index_key\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler_attachment_id_chunk_index_key\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"files_handler_attachment_id_chunk_index_key\"",
+        "sql": "CREATE UNIQUE INDEX \"files_handler_attachment_id_chunk_index_key\" ON \"public\".\"files_handler\" (\"attachment_id\", \"chunk_index\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"files_handler_attachment_id_chunk_index_key\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler_attachment_id_chunk_index_key\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.files_handler.files_handler_job_id_idx",
+    "label": "Create index \"files_handler_job_id_idx\" on \"files_handler\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "files_handler_job_id_idx",
+        "table": "files_handler"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"files_handler_job_id_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler_job_id_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"files_handler_job_id_idx\"",
+        "sql": "CREATE INDEX \"files_handler_job_id_idx\" ON \"public\".\"files_handler\" (\"job_id\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"files_handler_job_id_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler_job_id_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.files_handler.files_handler_session_id_idx",
+    "label": "Create index \"files_handler_session_id_idx\" on \"files_handler\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "files_handler_session_id_idx",
+        "table": "files_handler"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"files_handler_session_id_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler_session_id_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"files_handler_session_id_idx\"",
+        "sql": "CREATE INDEX \"files_handler_session_id_idx\" ON \"public\".\"files_handler\" (\"session_id\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"files_handler_session_id_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"files_handler_session_id_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.send_jobs.send_jobs_status_scheduled_at_idx",
+    "label": "Create index \"send_jobs_status_scheduled_at_idx\" on \"send_jobs\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "send_jobs_status_scheduled_at_idx",
+        "table": "send_jobs"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"send_jobs_status_scheduled_at_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_jobs_status_scheduled_at_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"send_jobs_status_scheduled_at_idx\"",
+        "sql": "CREATE INDEX \"send_jobs_status_scheduled_at_idx\" ON \"public\".\"send_jobs\" (\"status\", \"scheduled_at\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"send_jobs_status_scheduled_at_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_jobs_status_scheduled_at_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.send_recipients.send_recipients_job_id_email_idx",
+    "label": "Create index \"send_recipients_job_id_email_idx\" on \"send_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "send_recipients_job_id_email_idx",
+        "table": "send_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"send_recipients_job_id_email_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_recipients_job_id_email_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"send_recipients_job_id_email_idx\"",
+        "sql": "CREATE INDEX \"send_recipients_job_id_email_idx\" ON \"public\".\"send_recipients\" (\"job_id\", \"email\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"send_recipients_job_id_email_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_recipients_job_id_email_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "index.send_recipients.send_recipients_job_id_status_idx",
+    "label": "Create index \"send_recipients_job_id_status_idx\" on \"send_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "index",
+        "name": "send_recipients_job_id_status_idx",
+        "table": "send_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure index \"send_recipients_job_id_status_idx\" does not exist",
+        "sql": "SELECT (to_regclass($1)) IS NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_recipients_job_id_status_idx\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "create index \"send_recipients_job_id_status_idx\"",
+        "sql": "CREATE INDEX \"send_recipients_job_id_status_idx\" ON \"public\".\"send_recipients\" (\"job_id\", \"status\")",
+        "params": []
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify index \"send_recipients_job_id_status_idx\" exists",
+        "sql": "SELECT (to_regclass($1)) IS NOT NULL AS \"result\"",
+        "params": [
+          "\"public\".\"send_recipients_job_id_status_idx\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "foreignKey.campaign_attachments.campaign_attachments_campaign_id_fkey",
+    "label": "Add foreign key \"campaign_attachments_campaign_id_fkey\" on \"campaign_attachments\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "foreignKey",
+        "name": "campaign_attachments_campaign_id_fkey",
+        "table": "campaign_attachments"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure FK \"campaign_attachments_campaign_id_fkey\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "campaign_attachments_campaign_id_fkey",
+          "public",
+          "\"public\".\"campaign_attachments\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add FK \"campaign_attachments_campaign_id_fkey\"",
+        "sql": "ALTER TABLE \"public\".\"campaign_attachments\"\nADD CONSTRAINT \"campaign_attachments_campaign_id_fkey\"\nFOREIGN KEY (\"campaign_id\")\nREFERENCES \"public\".\"campaigns\" (\"id\")\nON DELETE CASCADE\nON UPDATE CASCADE"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify FK \"campaign_attachments_campaign_id_fkey\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "campaign_attachments_campaign_id_fkey",
+          "public",
+          "\"public\".\"campaign_attachments\""
+        ]
+      }
+    ]
+  },
+  {
+    "id": "foreignKey.campaign_recipients.campaign_recipients_campaign_id_fkey",
+    "label": "Add foreign key \"campaign_recipients_campaign_id_fkey\" on \"campaign_recipients\"",
+    "operationClass": "additive",
+    "target": {
+      "id": "postgres",
+      "details": {
+        "schema": "public",
+        "objectType": "foreignKey",
+        "name": "campaign_recipients_campaign_id_fkey",
+        "table": "campaign_recipients"
+      }
+    },
+    "precheck": [
+      {
+        "description": "ensure FK \"campaign_recipients_campaign_id_fkey\" does not exist",
+        "sql": "SELECT NOT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "campaign_recipients_campaign_id_fkey",
+          "public",
+          "\"public\".\"campaign_recipients\""
+        ]
+      }
+    ],
+    "execute": [
+      {
+        "description": "add FK \"campaign_recipients_campaign_id_fkey\"",
+        "sql": "ALTER TABLE \"public\".\"campaign_recipients\"\nADD CONSTRAINT \"campaign_recipients_campaign_id_fkey\"\nFOREIGN KEY (\"campaign_id\")\nREFERENCES \"public\".\"campaigns\" (\"id\")\nON DELETE CASCADE\nON UPDATE CASCADE"
+      }
+    ],
+    "postcheck": [
+      {
+        "description": "verify FK \"campaign_recipients_campaign_id_fkey\" exists",
+        "sql": "SELECT EXISTS (SELECT 1 AS \"one\" FROM \"pg_constraint\" AS \"c\" INNER JOIN \"pg_namespace\" AS \"n\" ON \"n\".\"oid\" = \"c\".\"connamespace\" WHERE (\"c\".\"conname\" = $1 AND \"n\".\"nspname\" = $2 AND \"c\".\"conrelid\" = to_regclass($3))) AS \"result\"",
+        "params": [
+          "campaign_recipients_campaign_id_fkey",
+          "public",
+          "\"public\".\"campaign_recipients\""
+        ]
+      }
+    ]
+  }
+]

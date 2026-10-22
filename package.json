@@ -16,8 +16,8 @@
   "dependencies": {
     "@prisma/orm-postgres": "8.0.0-rc.18",
     "@prisma/prisma7": "7.10.1",
-    "alchemy": "2.0.0-beta.78",
-    "effect": "4.0.0-rc.115",
+    "alchemy": "2.0.0-beta.83",
+    "effect": "4.0.3",
     "googleapis": "^172.0.0",
     "lucide-react": "^1.20.0",
     "motion": "^12.40.0",
@@ -25,8 +25,8 @@
     "nodemailer": "^6.9.16",
     "papaparse": "^5.4.1",
     "prisma": "8.0.0-rc.24",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@prisma/cli-engine": "^0.9.0",
@@ -45,15 +45,15 @@
     "typescript": "^5"
   },
   "overrides": {
-    "@effect/platform-bun": "4.0.0-rc.115",
-    "@effect/platform-node": "4.0.0-rc.115",
-    "@effect/platform-node-shared": "4.0.0-rc.115",
-    "@effect/sql-d1": "4.0.0-rc.115",
-    "@effect/sql-mysql2": "4.0.0-rc.115",
-    "@effect/sql-pg": "4.0.0-rc.115",
-    "@effect/sql-sqlite-do": "4.0.0-rc.115",
-    "@effect/vitest": "4.0.0-rc.115",
+    "@effect/platform-bun": "4.0.3",
+    "@effect/platform-node": "4.0.3",
+    "@effect/platform-node-shared": "4.0.3",
+    "@effect/sql-d1": "4.0.3",
+    "@effect/sql-mysql2": "4.0.3",
+    "@effect/sql-pg": "4.0.3",
+    "@effect/sql-sqlite-do": "4.0.3",
+    "@effect/vitest": "4.0.3",
     "@prisma/cli-engine": "$@prisma/cli-engine",
-    "effect": "4.0.0-rc.115"
+    "effect": "4.0.3"
   }
 }

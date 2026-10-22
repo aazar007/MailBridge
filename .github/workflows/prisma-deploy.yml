@@ -29,7 +29,7 @@ jobs:
       - uses: prisma/cloud-deploy-action@v1
         with:
           module: module.mjs
-          build-command: npm run build
+          build-command: npm run build:cloud
         env:
           # The action only reads this from its environment; repository
           # secrets are not exposed to actions automatically.

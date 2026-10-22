@@ -1,7 +1,7 @@
 // @ts-check
 import { module } from "@prisma/composer";
 import { postgres, dataContract } from "@prisma/composer-prisma-cloud/orm";
-import emailSenderWebContractJson from "./src/prisma/contract.json" with { type: "json" };
+import emailSenderWebContractJson from "./generated/prisma8/contract.json" with { type: "json" };
 import emailSenderWebService from "./service.mjs";
 
 export default module("mailbridge", ({ provision }) => {

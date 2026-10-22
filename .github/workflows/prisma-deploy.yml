@@ -30,3 +30,7 @@ jobs:
         with:
           module: module.mjs
           build-command: npm run build
+        env:
+          # The action only reads this from its environment; repository
+          # secrets are not exposed to actions automatically.
+          PRISMA_SERVICE_TOKEN: ${{ secrets.PRISMA_SERVICE_TOKEN }}

@@ -48,6 +48,18 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    return await handlePost(req);
+  } catch (err) {
+    console.error('POST /api/schedule failed:', err);
+    return NextResponse.json(
+      { error: 'Could not start the send — the database is unavailable. Try again shortly.' },
+      { status: 503 },
+    );
+  }
+}
+
+async function handlePost(req: NextRequest) {
   const body = await req.json();
   const { scheduledAt, label, payload, instant } = body as {
     scheduledAt: string;

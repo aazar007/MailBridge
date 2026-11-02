@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "prisma contract emit && prisma7 migrate deploy && next build",
+    "build": "prisma contract emit && next build",
     "start": "next start",
     "postinstall": "prisma contract emit",
     "contract:emit": "prisma contract emit",
